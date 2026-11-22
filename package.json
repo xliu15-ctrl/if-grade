@@ -1,0 +1,27 @@
+{
+  "scripts": {
+    "build": "node scripts/build-site.mjs --browser && tailwindcss -i site/browser.css -o site-dist/app.css --content \"./site/**/*.{tsx,html},./src/**/*.{tsx,ts}\" --minify",
+    "preview": "node site/server.mjs --local"
+  },
+  "dependencies": {
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "dayjs": "1.11.10",
+    "esbuild": "0.28.1",
+    "fflate": "0.7.5",
+    "lodash-es": "4.17.21",
+    "lucide-react": "0.468.0",
+    "papaparse": "5.5.3",
+    "pdfjs-dist": "4.4.168",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "read-excel-file": "5.8.8",
+    "recharts": "2.12.7",
+    "tesseract.js": "5.1.1",
+    "uuid": "9.0.1",
+    "xlsx": "0.18.5"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

@@ -1,0 +1,59 @@
+/* An ink and watercolor walk, with small accessible weather interactions. */
+.journey-scene { position: relative; min-width: 0; border-radius: 48% 48% 18% 18%; padding: 23px 0 12px; color: #586e62; background: radial-gradient(ellipse at 50% 47%, #eef3ed88, transparent 70%); transition: background 1.2s, color 1.2s; }
+.journey-meta { display: flex; justify-content: space-between; padding-inline: 32px; gap: 15px; font-size: 9px; letter-spacing: .13em; color: #8c968c; }
+.journey-meta > span:last-child { letter-spacing: .05em; white-space: nowrap; }
+.journey-art { display: block; width: 100%; height: auto; overflow: visible; }
+.sky-wash { opacity: .65; transition: fill 1.2s, opacity 1.2s; }
+.scene-ground { stroke: #9da999; }
+.scene-path { stroke: #b2bdac; }
+.scene-grass { color: #a8b69d; }
+.footprints { color: #83917c; opacity: .45; }
+.footprints > g { animation: footprint-arrive 3.8s infinite; }
+.boy-shadow { fill: #536c57; opacity: .12; }
+.boy-walk { animation: boy-walking 1.15s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+.boy-leg { transform-box: fill-box; transform-origin: center top; animation: leg-step 1.15s ease-in-out infinite; }
+.leg-right { animation-delay: -.575s; }
+.boy-head { transform-box: fill-box; transform-origin: center bottom; }
+.scene-cloud { color: #fafcf9; stroke: #afbdae; cursor: pointer; transition: color 1s, stroke 1s; filter: drop-shadow(0 7px 10px #6680640a); }
+.scene-cloud:hover { color: #e3ebdf; }
+.scene-cloud:focus-visible, .street-lamp:focus-visible { outline: 2px solid #8b9a78; outline-offset: 5px; border-radius: 8px; }
+.street-lamp { color: #7b897a; cursor: pointer; transition: color 1s; }
+.lamp-glass { fill: #eff0df; transition: fill 1s; }
+.lamp-bulb { fill: #d8d3b5; transition: fill 1s; }
+.lamp-beam, .scene-stars { opacity: 0; pointer-events: none; transition: opacity 1.2s; }
+.scene-sun { opacity: 1; transition: opacity 1s; }
+.scene-hint { fill: #91a08a; font-size: 11px; letter-spacing: 2px; font-family: var(--serif); }
+.journey-caption { text-align: center; font-family: var(--serif); font-size: 16px; letter-spacing: .04em; color: #62775e; margin-top: -10px; transition: color 1s; }
+.weather-controls { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
+.weather-controls button { min-height: 35px; padding: 5px 12px; font-size: 11px; color: #89917f; border: 1px solid transparent; border-radius: 20px; transition: background .3s, color .3s; }
+.weather-controls button[aria-pressed="true"] { color: #4e6950; border-color: #d9e2d2; background: #f0f4eb; }
+.weather-controls span { width: 100%; text-align: center; color: #a0a697; font-size: 10px; margin-top: 4px; }
+.journey-scene.is-night { background: radial-gradient(ellipse at 50% 42%, #253d4f 0%, #3d536244 48%, transparent 70%); }
+.is-night .sky-wash { fill: #304859; opacity: .9; }
+.is-night .scene-stars, .is-night .lamp-beam { opacity: 1; }
+.is-night .scene-sun { opacity: 0; }
+.is-night .scene-cloud { color: #7b929e; stroke: #a3b5b6; }
+.is-night .lamp-glass { fill: #ffe8a6; }
+.is-night .lamp-bulb { fill: #fff5c9; }
+.is-night .street-lamp { color: #b4b9a3; }
+.is-night .boy-shadow { opacity: .25; }
+.weather-cloudy .scene-sun { opacity: .2; }
+.weather-cloudy .scene-cloud { color: #e4eae1; }
+.weather-rain .scene-sun { opacity: 0; }
+.weather-rain .scene-cloud { color: #c3d0cb; stroke: #91a79d; }
+.boy-umbrella, .scene-rain { visibility: hidden; opacity: 0; }
+.weather-rain .boy-umbrella, .weather-rain .scene-rain { visibility: visible; opacity: 1; }
+.scene-rain { pointer-events: none; }
+.scene-rain path { animation: rain-fall 1.25s linear infinite; }
+.boy-reaction { transform-origin: 284px 340px; }
+.react-sunny { animation: happy-spin 1.6s cubic-bezier(.35,.05,.3,1); }
+.react-cloudy .boy-head { animation: boy-look-up 1.9s ease-in-out; }
+@keyframes boy-walking { 0%, 100% { transform: translateY(0) rotate(-.8deg); } 50% { transform: translateY(-3px) rotate(.8deg); } }
+@keyframes leg-step { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+@keyframes happy-spin { 0%, 100% { transform: translateY(0) rotateY(0); } 25% { transform: translateY(-35px) rotate(-8deg) rotateY(0); } 65% { transform: translateY(-30px) rotate(5deg) rotateY(360deg); } 85% { transform: translateY(3px) rotateY(360deg); } }
+@keyframes boy-look-up { 30%, 70% { transform: translateY(-4px) rotate(-7deg) scaleY(.9); } }
+@keyframes rain-fall { from { opacity: 0; transform: translate(3px,-14px); } 30% { opacity: .65; } to { opacity: 0; transform: translate(-9px,30px); } }
+@keyframes footprint-arrive { 0%, 100% { opacity: .3; } 45% { opacity: 1; } }
+@media (max-width: 600px) { .journey-scene { padding-top: 8px; margin-top: -10px; } .journey-meta { padding-inline: 8px; font-size: 8px; } .journey-caption { font-size: 14px; } }
+@media (prefers-reduced-motion: reduce) { .journey-scene *, .journey-scene *::before { animation: none !important; transition: none !important; } }
+

@@ -155,3 +155,14 @@ vite.config.ts.timestamp-*
 .nx/cache
 .nx/workspace-data
 .nx/migrate-runs
+
+# If Grade browser data and build outputs
+site-dist/
+/data/
+/成绩知识库/
+_assets/
+.screenshot-images/
+.wrangler/
+__pycache__/
+*.pyc
+
