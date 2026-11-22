@@ -19,9 +19,9 @@ export interface ScoreRecord {
   id: string
   courseName: string
   credits: number
-  originalScore: number
+  originalScore: number | null
   simulatedScore: number | null
-  simulatedGP: number | null   // 模拟绩点
+  simulatedGP?: number | null   // 模拟绩点
   semester: number
   category: string              // 性质标签（专必/公必/公选/...，原始成绩单标签）
   source: 'manual' | 'import' | 'auto'
@@ -44,8 +44,6 @@ export interface SemesterStats {
   simulatedArithAvg: number
   originalGPA: number
   simulatedGPA: number
-  predictedGPA: number
-  predictedAvg: number
   hasModifications: boolean
   modifiedCount: number
   correctedCount: number
@@ -141,7 +139,7 @@ export interface ReverseTarget {
   courseId: string
   courseName: string
   credits: number
-  currentScore: number
+  currentScore: number | null
   suggestedScore: number
   locked: boolean
   lockedValue: number | null
@@ -155,14 +153,19 @@ export interface ReverseTarget {
 export interface ReverseResult {
   mode: 'retake' | 'predict'
   targetGPA: number
-  currentGPA: number
-  gap: number
+  currentGPA: number | null
+  gap: number | null
   targetType: 'gpa' | 'weighted' | 'arithmetic'
+  basis?: string
+  inputs?: string
+  selection?: string
+  hasTarget?: boolean
+  inputUnit?: 'score' | 'gpa'
   targets: ReverseTarget[]
   achievable: boolean
-  estimatedGPA: number
-  estimatedWeightedAvg: number
-  estimatedArithAvg: number
+  estimatedGPA: number | null
+  estimatedWeightedAvg: number | null
+  estimatedArithAvg: number | null
   warningMessage: string | null
 }
 

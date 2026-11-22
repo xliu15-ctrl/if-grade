@@ -3,8 +3,8 @@
 // ============================================================
 
 import type {
-  ScoreRecord, AlgorithmConfig, ScoreGpaMapping,
-  CourseCategory, SemesterStats, ReverseTarget, ReverseResult,
+  ScoreRecord, AlgorithmConfig,
+  CourseCategory, SemesterStats, ReverseResult,
   WESConfig,
 } from './types'
 import { SEMESTER_LABELS } from './types'
@@ -21,7 +21,7 @@ import { SEMESTER_LABELS } from './types'
 const STANDARD_4_0: AlgorithmConfig = {
   id: 'standard_4.0',
   name: '标准 4.0',
-  description: '美国/ChaseDream 常用分段对照表：90+=4.0, 85+=3.7 ... 60+=1.0',
+  description: '本工具的通用百分制模拟分段：90+=4.0, 85+=3.7 ... 60+=1.0',
   type: 'segmented',
   maxGPA: 4.0,
   precision: 2,
@@ -45,7 +45,7 @@ const STANDARD_4_0: AlgorithmConfig = {
 const PKU_4_0: AlgorithmConfig = {
   id: 'pku_4.0',
   name: '北大 4.0（连续公式）',
-  description: '北京大学：GPA = 4 - 3×(100-成绩)²/1600，60≤成绩≤100；<60=0。注：2025级起新生已废除GPA改用等级制',
+  description: '北大本科历史百分制公式，60 分起按 4 − 3 × (100 − 成绩)² / 1600 计算。适用年级请核对成绩单。',
   type: 'continuous',
   maxGPA: 4.0,
   precision: 2,
@@ -57,55 +57,47 @@ const PKU_4_0: AlgorithmConfig = {
   formula: { a: 4, b: 3, c: 100 },
 }
 
-/** 清华大学 4.0 — 12级字母等级制（2015级起） */
+// 清华 2015 版百分对照：https://qiyuan.tsinghua.edu.cn/ueditor/jsp/upload/20150910/79631441873140312.pdf
+// 后续等级制规定单独使用等级，本预设只用于该历史百分表。
 const TSINGHUA_4_0: AlgorithmConfig = {
-  id: 'tsinghua_4.0',
-  name: '清华 4.0（12级等级制）',
-  description: '清华大学2015级起：12级字母等级 A+=4.0, A=4.0, A-=3.7, B+=3.6, B=3.3, B-=3.0, C+=2.6, C=2.3, C-=2.0, D+=1.6, D=1.3, F=0',
-  type: 'segmented',
-  maxGPA: 4.0,
-  precision: 2,
+  id: 'tsinghua_4.0', name: '清华 4.0（2015 版百分对照）',
+  description: '按 2015 版《清华大学学生成绩记载规定》的百分表试算。其他版本的等级制请按成绩单记载的绩点计算。',
+  type: 'segmented', maxGPA: 4, precision: 2,
   mapping: [
-    { min: 100, max: 100, gpa: 4.0, grade: 'A+' },  // 对等百分 100
-    { min: 93, max: 99, gpa: 4.0, grade: 'A' },      // 对等百分 98
-    { min: 88, max: 92, gpa: 3.7, grade: 'A-' },     // 对等百分 92
-    { min: 84, max: 87, gpa: 3.6, grade: 'B+' },     // 对等百分 87
-    { min: 80, max: 83, gpa: 3.3, grade: 'B' },      // 对等百分 82
-    { min: 76, max: 79, gpa: 3.0, grade: 'B-' },     // 对等百分 78
-    { min: 73, max: 75, gpa: 2.6, grade: 'C+' },     // 对等百分 75
-    { min: 70, max: 72, gpa: 2.3, grade: 'C' },      // 对等百分 71
-    { min: 67, max: 69, gpa: 2.0, grade: 'C-' },     // 对等百分 68
-    { min: 64, max: 66, gpa: 1.6, grade: 'D+' },     // 对等百分 65
-    { min: 61, max: 63, gpa: 1.3, grade: 'D' },      // 对等百分 61
-    { min: 0, max: 60, gpa: 0, grade: 'F' },
-  ],
-  courseFilters: {},
-  weighting: { type: 'standard' },
-}
-
-/** 上海交通大学 4.3 — 10段分段制 */
-const SJTU_4_3: AlgorithmConfig = {
-  id: 'sjtu_4.3',
-  name: '上海交大 4.3',
-  description: '上海交通大学本科生：A+ 95-100=4.3, A 90-94=4.0, B+ 85-89=3.7 ... D 60-64=1.3, F=0',
-  type: 'segmented',
-  maxGPA: 4.3,
-  precision: 2,
-  mapping: [
-    { min: 95, max: 100, gpa: 4.3, grade: 'A+' },
-    { min: 90, max: 94, gpa: 4.0, grade: 'A' },
-    { min: 85, max: 89, gpa: 3.7, grade: 'B+' },
-    { min: 82, max: 84, gpa: 3.3, grade: 'B' },
-    { min: 78, max: 81, gpa: 3.0, grade: 'B-' },
-    { min: 75, max: 77, gpa: 2.7, grade: 'C+' },
-    { min: 72, max: 74, gpa: 2.3, grade: 'C' },
-    { min: 68, max: 71, gpa: 2.0, grade: 'C-' },
-    { min: 65, max: 67, gpa: 1.7, grade: 'D' },
-    { min: 60, max: 64, gpa: 1.3, grade: 'D-' },
+    { min: 95, max: 100, gpa: 4, grade: 'A+/A' },
+    { min: 90, max: 94, gpa: 3.7, grade: 'A-' },
+    { min: 85, max: 89, gpa: 3.3, grade: 'B+' },
+    { min: 80, max: 84, gpa: 3, grade: 'B' },
+    { min: 77, max: 79, gpa: 2.7, grade: 'B-' },
+    { min: 73, max: 76, gpa: 2.3, grade: 'C+' },
+    { min: 70, max: 72, gpa: 2, grade: 'C' },
+    { min: 67, max: 69, gpa: 1.7, grade: 'C-' },
+    { min: 63, max: 66, gpa: 1.3, grade: 'D+' },
+    { min: 60, max: 62, gpa: 1, grade: 'D' },
     { min: 0, max: 59, gpa: 0, grade: 'F' },
   ],
-  courseFilters: {},
-  weighting: { type: 'standard' },
+  courseFilters: {}, weighting: { type: 'standard' },
+}
+
+// 上海交大本科：https://jwc.sjtu.edu.cn/info/1482/12870.htm
+const SJTU_4_3: AlgorithmConfig = {
+  id: 'sjtu_4.3', name: '上海交大 4.3',
+  description: '上海交大本科百分制考试课程。95 分起为 4.3，85 分起为 3.7，60 分起为 1.0。',
+  type: 'segmented', maxGPA: 4.3, precision: 2,
+  mapping: [
+    { min: 95, max: 100, gpa: 4.3, grade: 'A+' },
+    { min: 90, max: 94, gpa: 4, grade: 'A' },
+    { min: 85, max: 89, gpa: 3.7, grade: 'A-' },
+    { min: 80, max: 84, gpa: 3.3, grade: 'B+' },
+    { min: 75, max: 79, gpa: 3, grade: 'B' },
+    { min: 70, max: 74, gpa: 2.7, grade: 'B-' },
+    { min: 67, max: 69, gpa: 2.3, grade: 'C+' },
+    { min: 65, max: 66, gpa: 2, grade: 'C' },
+    { min: 62, max: 64, gpa: 1.7, grade: 'C-' },
+    { min: 60, max: 61, gpa: 1, grade: 'D' },
+    { min: 0, max: 59, gpa: 0, grade: 'F' },
+  ],
+  courseFilters: {}, weighting: { type: 'standard' },
 }
 
 /** 中科大 4.3 — 13段分段制（国内最细） */
@@ -167,7 +159,7 @@ const ZJU_5_0: AlgorithmConfig = {
 const ZJU_4_3: AlgorithmConfig = {
   id: 'zju_4.3',
   name: '浙大 4.3（出国）',
-  description: '浙江大学出国成绩单（2022级起）：95-100=4.3, 92-94=4.2, 89-91=4.1 ... <60=0',
+  description: '浙大 2022 级起出国成绩单百分换算。同一课程号按最高一次成绩整理后再计入。',
   type: 'segmented',
   maxGPA: 4.3,
   precision: 2,
@@ -177,14 +169,14 @@ const ZJU_4_3: AlgorithmConfig = {
     { min: 89, max: 91, gpa: 4.1 },
     { min: 86, max: 88, gpa: 4.0 },
     { min: 83, max: 85, gpa: 3.9 },
-    { min: 80, max: 82, gpa: 3.8 },
-    { min: 77, max: 79, gpa: 3.7 },
-    { min: 74, max: 76, gpa: 3.6 },
-    { min: 71, max: 73, gpa: 3.5 },
-    { min: 68, max: 70, gpa: 3.4 },
-    { min: 65, max: 67, gpa: 3.3 },
-    { min: 62, max: 64, gpa: 3.2 },
-    { min: 60, max: 61, gpa: 3.0 },
+    { min: 80, max: 82, gpa: 3.6 },
+    { min: 77, max: 79, gpa: 3.3 },
+    { min: 74, max: 76, gpa: 3.0 },
+    { min: 71, max: 73, gpa: 2.7 },
+    { min: 68, max: 70, gpa: 2.4 },
+    { min: 65, max: 67, gpa: 2.1 },
+    { min: 62, max: 64, gpa: 1.8 },
+    { min: 60, max: 61, gpa: 1.5 },
     { min: 0, max: 59, gpa: 0 },
   ],
   courseFilters: {},
@@ -195,7 +187,7 @@ const ZJU_4_3: AlgorithmConfig = {
 const FIVE_POINT_LINEAR: AlgorithmConfig = {
   id: 'five_point',
   name: '5.0 线性制',
-  description: '简单五分制线性映射：GPA = 成绩/10 - 5，100=5.0, 60=1.0',
+  description: '本工具的五分制模型：60 分及以上为成绩 / 10 − 5，低于 60 分计 0。',
   type: 'linear',
   maxGPA: 5.0,
   precision: 2,
@@ -209,8 +201,8 @@ const FIVE_POINT_LINEAR: AlgorithmConfig = {
 /** WES 4.0 — 留学认证标准 */
 const WES_4_0: AlgorithmConfig = {
   id: 'wes_4.0',
-  name: 'WES 标准',
-  description: 'WES 留学认证标准：85+=A(4.0), 75-84=B(3.0), 60-74=C(2.0), <60=F(0)',
+  name: 'WES 模拟（估算）',
+  description: '本工具的情境估算，按类别折算学分：85+=A(4.0), 75-84=B(3.0), 60-74=C(2.0), <60=F(0)',
   type: 'segmented',
   maxGPA: 4.0,
   precision: 2,
@@ -243,13 +235,21 @@ const BNBU_4_0: AlgorithmConfig = {
     { min: 1.67, max: 1.67, gpa: 1.67, grade: 'C-' },
     { min: 1.00, max: 1.00, gpa: 1.00, grade: 'D' },
     { min: 0.00, max: 0.00, gpa: 0.00, grade: 'F' },
+    { min: 0, max: 0, gpa: 0, grade: 'E' },
   ],
   courseFilters: {},
   weighting: { type: 'standard' },
 }
 
+const TRANSCRIPT_GPA: AlgorithmConfig = {
+  id: 'transcript_gpa', name: '成绩单原始绩点（通用）', type: 'grade', maxGPA: 5, precision: 2,
+  description: '直接按学分加权成绩单上已给出的绩点。本通用模型可输入 0–5，反推时请选用与学校满绩点相符的规则。',
+  mapping: [], courseFilters: {}, weighting: { type: 'standard' },
+}
+
 export const PRESET_ALGORITHMS: Record<string, AlgorithmConfig> = {
   bnbu_4_0: BNBU_4_0,
+  transcript_gpa: TRANSCRIPT_GPA,
   standard_4_0: STANDARD_4_0,
   pku_4_0: PKU_4_0,
   tsinghua_4_0: TSINGHUA_4_0,
@@ -280,88 +280,80 @@ export function customToAlgoConfig(custom: import('./types').CustomAlgorithm): A
 // 分数 → GPA 映射
 // ============================================================
 
-export function scoreToGPA(score: number, algo: AlgorithmConfig): number {
-  if (algo.type === 'grade') {
-    // 等级制：score 即为每学分绩点（如 BNBU/HKBU），直接返回
-    return score
+export function validateMappings(type: 'grade' | 'segmented', max: number,
+  rows: Array<{ grade: string; min: number; max: number; gpa: number }>): string | null {
+  if (!Number.isFinite(max) || max <= 0 || !rows.length) return '请输入正数满绩点，并至少填写一行映射。'
+  if (rows.some(r => !r.grade || !inRange(r.gpa, max)) || new Set(rows.map(r => r.grade)).size !== rows.length)
+    return '等级名称必须唯一，绩点必须在 0 与满绩点之间。'
+  if (type === 'grade') return null
+  const sorted = [...rows].sort((a,b) => a.min - b.min)
+  if (sorted[0].min !== 0 || sorted[sorted.length-1].max !== 100) return '分段须覆盖 0 至 100 分。'
+  for (let i=0; i<sorted.length; i++) {
+    const r = sorted[i], prev = sorted[i-1]
+    if (!inRange(r.min) || !inRange(r.max) || r.min > r.max) return '请检查每一行的分数上下限。'
+    if (prev && (r.min <= prev.min || prev.gpa > r.gpa || (r.min !== prev.max &&
+        !(Number.isInteger(prev.max) && r.min > prev.max && r.min <= prev.max + 1))))
+      return '分段须连续，不能重叠，分数递增时绩点不能下降。'
   }
-
-  if (algo.type === 'continuous') {
-    // 连续公式法（如北大）：GPA = a - b*(c-score)²/1600，60≤score≤100
-    if (score >= 60 && score <= 100 && algo.formula) {
-      const { a, b, c } = algo.formula
-      const gpa = a - b * (c - score) * (c - score) / 1600
-      return Math.round(gpa * 100) / 100
-    }
-    return 0
-  }
-
-  if (algo.type === 'linear') {
-    const gpa = score / 10 - 5
-    return Math.max(0, Math.min(algo.maxGPA, Math.round(gpa * 100) / 100))
-  }
-
-  const mapping = algo.mapping
-  for (const m of mapping) {
-    if (score >= m.min && score <= m.max) {
-      return m.gpa
-    }
-  }
-  return 0
+  return null
 }
 
-/** 反推：绩点 → 分数（逆映射） */
-export function gpaToScore(gpa: number, algo: AlgorithmConfig): number {
+export type ScoreKey = 'originalScore' | 'simulatedScore'
+
+export function inRange(value: unknown, max = 100): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max
+}
+
+export function courseScore(c: ScoreRecord, key: ScoreKey): number | null {
+  // Future rows in older workspaces stored 0 in the unused original-score field.
+  const value = c.isPredicted ? (key === 'simulatedScore' ? c.simulatedScore : null)
+    : key === 'originalScore' ? c.originalScore : c.simulatedScore ?? c.originalScore
+  return inRange(value) ? value : null
+}
+
+export function isModified(c: ScoreRecord): boolean {
+  return (c.simulatedScore != null && c.simulatedScore !== c.originalScore) ||
+    (c.simulatedGP != null && c.simulatedGP !== c.gradePoint)
+}
+
+function bandFor<T extends { min: number; max: number }>(score: number, rows: T[]) {
+  // An integer band 85–89 includes 89.5. Explicit decimal bounds remain inclusive.
+  let match: T | undefined
+  for (const row of rows) {
+    const within = score <= row.max || (Number.isInteger(row.max) && score < row.max + 1)
+    if (within && score >= row.min && (!match || row.min > match.min)) match = row
+  }
+  return match
+}
+
+export function scoreToGPA(score: number, algo: AlgorithmConfig): number {
+  if (!inRange(score, algo.type === 'grade' ? algo.maxGPA : 100)) return 0
+  if (algo.type === 'grade') return score
   if (algo.type === 'continuous' && algo.formula) {
-    // 逆公式：score = c - sqrt((a - gpa) * 1600 / b)
     const { a, b, c } = algo.formula
-    if (gpa <= 0) return 0
-    if (gpa >= a) return 100
-    const diff = (a - gpa) * 1600 / b
-    if (diff < 0) return 0
-    const score = c - Math.sqrt(diff)
-    return Math.round(Math.max(0, Math.min(100, score)))
+    return score < 60 ? 0 : a - b * (c - score) ** 2 / 1600
   }
+  if (algo.type === 'linear') return score < 60 ? 0 : Math.min(algo.maxGPA, score / 10 - 5)
+  return bandFor(score, algo.mapping)?.gpa ?? 0
+}
 
-  if (algo.type === 'linear') {
-    const score = (gpa + 5) * 10
-    return Math.round(Math.max(0, Math.min(100, score)))
+/** Minimum input attaining the requested course GPA (to 0.01 for formula-based scales). */
+export function gpaToScore(gpa: number, algo: AlgorithmConfig): number {
+  if (!inRange(gpa, algo.maxGPA)) return NaN
+  if (gpa === 0) return 0
+  if (algo.type === 'grade') return gpa
+  if (algo.type === 'linear') return Math.max(60, Math.ceil((gpa + 5) * 1000 - 1e-9) / 100)
+  if (algo.type === 'continuous' && algo.formula) {
+    const { a, b, c } = algo.formula
+    return Math.max(60, Math.ceil((c - Math.sqrt((a - gpa) * 1600 / b)) * 100 - 1e-9) / 100)
   }
-
-  // 分段映射：找目标绩点对应的分数段中位数
-  const sorted = [...algo.mapping].sort((a, b) => a.min - b.min)
-  for (const m of sorted) {
-    if (gpa >= m.gpa) {
-      // 找到绩点匹配的最低分段
-      continue
-    }
-    // gpa < 当前分段的 GPA，返回上一分段的中位数
-    return m.min
-  }
-  // 没找到更大的分段，返回最高分段的最低分
-  const highest = sorted[sorted.length - 1]
-  return highest ? highest.min : 60
+  const matches = algo.mapping.filter(m => m.gpa >= gpa)
+  return matches.length ? Math.min(...matches.map(m => m.min)) : NaN
 }
 
 export function scoreToGrade(score: number, algo: AlgorithmConfig): string {
-  if (algo.type === 'grade') {
-    // 等级制：score 是绩点值，反查等级
-    const mapping = algo.mapping
-    for (const m of mapping) {
-      if (m.grade && Math.abs(score - m.gpa) < 0.01) {
-        return m.grade
-      }
-    }
-    return score.toFixed(2)
-  }
-
-  const mapping = algo.mapping
-  for (const m of mapping) {
-    if (m.grade && score >= m.min && score <= m.max) {
-      return m.grade
-    }
-  }
-  return '-'
+  if (algo.type === 'grade') return algo.mapping.find(m => Math.abs(score - m.gpa) < .00001)?.grade || '—'
+  return inRange(score) ? bandFor(score, algo.mapping)?.grade || '-' : '-'
 }
 
 /** 从等级字符串反查 GPA 值（如 "A-" → 3.67） */
@@ -380,7 +372,7 @@ export function gradeToScore(grade: string, algo: AlgorithmConfig): number | nul
   const trimmed = grade.trim()
   for (const m of algo.mapping) {
     if (m.grade === trimmed) {
-      return m.min
+      return algo.type === 'grade' ? m.gpa : m.min
     }
   }
   return null
@@ -416,7 +408,7 @@ export function filterCourses(
     result = result.filter(c => filters.onlySemesters!.includes(c.semester))
   }
   if (filters.minScore !== undefined) {
-    result = result.filter(c => c.originalScore >= filters.minScore!)
+    result = result.filter(c => c.originalScore != null && c.originalScore >= filters.minScore!)
   }
 
   return result
@@ -431,51 +423,32 @@ export function arithmeticAvg(
   courses: ScoreRecord[],
   scoreKey: 'originalScore' | 'simulatedScore'
 ): number {
-  const valid = courses.filter(c => {
-    const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-    return score != null
-  })
-  if (valid.length === 0) return 0
-
-  const total = valid.reduce((sum, c) => {
-    const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-    return sum + score
-  }, 0)
-  return Math.round((total / valid.length) * 100) / 100
+  return roundedMean(courses, c => courseScore(c, scoreKey), () => 1)
 }
 
-/** 加权平均分（学分加权） */
-export function weightedAvg(
-  courses: ScoreRecord[],
-  scoreKey: 'originalScore' | 'simulatedScore'
-): number {
-  // 优先使用百分制成绩；只有全部课程都没有百分制分数时才用 gradePoint（纯等级制数据兜底）
-  const hasPercentScores = courses.some(c => {
-    const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-    return score != null
-  })
+/** Percentage average weighted by course credits. */
+export function weightedAvg(courses: ScoreRecord[], scoreKey: ScoreKey): number {
+  return roundedMean(courses, c => courseScore(c, scoreKey), c => c.credits)
+}
 
-  if (hasPercentScores) {
-    const valid = courses.filter(c => {
-      const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-      return score != null
-    })
-    if (valid.length === 0) return 0
-
-    const totalWeighted = valid.reduce((sum, c) => {
-      const score = scoreKey === 'originalScore' ? c.originalScore! : (c.simulatedScore ?? c.originalScore)!
-      return sum + score * c.credits
-    }, 0)
-    const totalCredits = valid.reduce((sum, c) => sum + c.credits, 0)
-    return totalCredits === 0 ? 0 : Math.round((totalWeighted / totalCredits) * 100) / 100
+function mean(courses: ScoreRecord[], valueOf: (c: ScoreRecord) => number | null, weightOf: (c: ScoreRecord) => number) {
+  let sum = 0, weight = 0
+  for (const course of courses) {
+    const value = valueOf(course), w = weightOf(course)
+    if (value == null || !Number.isFinite(value) || !Number.isFinite(w) || w <= 0) continue
+    sum += value * w
+    weight += w
   }
+  return weight ? sum / weight : null
+}
 
-  // 纯等级制数据兜底：使用 gradePoint 字段，自动排除 S/U
-  const valid = courses.filter(c => c.gradePoint != null && c.gradePoint > 0)
-  if (valid.length === 0) return 0
-  const totalWeighted = valid.reduce((sum, c) => sum + c.gradePoint! * c.credits, 0)
-  const totalCredits = valid.reduce((sum, c) => sum + c.credits, 0)
-  return totalCredits === 0 ? 0 : Math.round((totalWeighted / totalCredits) * 100) / 100
+function round(value: number, digits: number) {
+  const scale = 10 ** digits
+  return Math.round((value + Number.EPSILON) * scale) / scale
+}
+
+function roundedMean(courses: ScoreRecord[], valueOf: (c: ScoreRecord) => number | null, weightOf: (c: ScoreRecord) => number, digits = 2) {
+  return round(mean(courses, valueOf, weightOf) ?? 0, digits)
 }
 
 /** GPA → 等级（根据算法 mapping 找最接近的等级，不硬编码） */
@@ -503,45 +476,87 @@ export function formatGradeAvg(avg: number, algo: AlgorithmConfig): string {
 // GPA 计算
 // ============================================================
 
-export function calculateGPA(
-  courses: ScoreRecord[],
-  scoreKey: 'originalScore' | 'simulatedScore',
-  algo: AlgorithmConfig
-): number {
-  const filtered = filterCourses(courses, algo.courseFilters)
-
+export function courseGPA(c: ScoreRecord, key: ScoreKey, algo: AlgorithmConfig): number | null {
   if (algo.type === 'grade') {
-    // 等级制算法（如 BNBU/HKBU）：优先使用 gradePoint 字段
-    // S/U 课程 gradePoint 为 null，自动排除
-    const valid = filtered.filter(c => {
-      const gp = c.gradePoint
-      return gp != null && gp > 0
-    })
-    if (valid.length === 0) return 0
-
-    const totalWeighted = valid.reduce((sum, c) => {
-      return sum + c.gradePoint! * c.credits
-    }, 0)
-    const totalCredits = valid.reduce((sum, c) => sum + c.credits, 0)
-    const raw = totalCredits === 0 ? 0 : totalWeighted / totalCredits
-    return Math.round(raw * Math.pow(10, algo.precision)) / Math.pow(10, algo.precision)
+    const gp = c.isPredicted ? (key === 'simulatedScore' ? c.simulatedGP : null) :
+      key === 'originalScore' ? c.gradePoint : c.simulatedGP ?? c.gradePoint
+    return inRange(gp, algo.maxGPA) ? gp : null
   }
+  const score = courseScore(c, key)
+  return score == null ? null : scoreToGPA(score, algo)
+}
 
-  const valid = filtered.filter(c => {
-    const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-    return score != null
-  })
-  if (valid.length === 0) return 0
+export function gpaWeight(c: ScoreRecord, algo: AlgorithmConfig): number {
+  if (!Number.isFinite(c.credits) || c.credits <= 0) return 0
+  if (algo.id === WES_4_0.id) return wesCourse(c, 'simulatedScore').credits
+  const { excludeTypes, onlyTypes, onlySemesters, minScore } = algo.courseFilters
+  if (excludeTypes?.includes(c.category as CourseCategory) ||
+      (onlyTypes?.length && !onlyTypes.includes(c.category as CourseCategory)) ||
+      (onlySemesters?.length && !onlySemesters.includes(c.semester)) ||
+      (minScore != null && (c.originalScore == null || c.originalScore < minScore))) return 0
+  const factor = algo.weighting.type === 'categorical' ? algo.weighting.categoryWeights?.[c.category as CourseCategory] ?? 1 : 1
+  return Number.isFinite(factor) && factor > 0 ? c.credits * factor : 0
+}
 
-  const totalWeighted = valid.reduce((sum, c) => {
-    const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-    const gpa = scoreToGPA(score, algo)
-    return sum + gpa * c.credits
-  }, 0)
+export function rawGPA(courses: ScoreRecord[], key: ScoreKey, algo: AlgorithmConfig): number | null {
+  return mean(courses, c => courseGPA(c, key, algo), c => gpaWeight(c, algo))
+}
 
-  const totalCredits = valid.reduce((sum, c) => sum + c.credits, 0)
-  const raw = totalCredits === 0 ? 0 : totalWeighted / totalCredits
-  return Math.round(raw * Math.pow(10, algo.precision)) / Math.pow(10, algo.precision)
+export function calculateGPA(courses: ScoreRecord[], key: ScoreKey, algo: AlgorithmConfig): number {
+  return round(rawGPA(courses, key, algo) ?? 0, algo.precision)
+}
+
+export function summarize(courses: ScoreRecord[], key: ScoreKey, algo: AlgorithmConfig) {
+  const gpa = rawGPA(courses, key, algo)
+  const weighted = mean(courses, c => courseScore(c, key), c => c.credits)
+  const arithmetic = mean(courses, c => courseScore(c, key), () => 1)
+  return {
+    gpa: gpa == null ? null : round(gpa, algo.precision),
+    weighted: weighted == null ? null : round(weighted, 2),
+    arithmetic: arithmetic == null ? null : round(arithmetic, 2),
+  }
+}
+
+export const displayMetric = (value: number | null | undefined, digits = 2) =>
+  value != null && Number.isFinite(value) ? value.toFixed(digits) : '—'
+
+export function gpaImpacts(courses: ScoreRecord[], algo: AlgorithmConfig) {
+  const eligibleCredits = (key: ScoreKey) => courses.reduce((total, c) =>
+    total + (courseGPA(c, key, algo) == null ? 0 : gpaWeight(c, algo)), 0)
+  const original = eligibleCredits('originalScore'), simulated = eligibleCredits('simulatedScore')
+  return courses.map(course => {
+    const weight = gpaWeight(course, algo)
+    const before = original ? (courseGPA(course, 'originalScore', algo) ?? 0) * weight / original : 0
+    const after = simulated ? (courseGPA(course, 'simulatedScore', algo) ?? 0) * weight / simulated : 0
+    return { course, delta: after - before }
+  }).filter(item => Math.abs(item.delta) > 1e-12 || isModified(item.course))
+}
+
+export function improvementData(courses: ScoreRecord[], algo: AlgorithmConfig) {
+  if (algo.type === 'grade') return []
+  const valid = courses.filter(c => courseScore(c, 'originalScore') != null && gpaWeight(c, algo) > 0)
+  const total = valid.reduce((sum, c) => sum + gpaWeight(c, algo), 0)
+  return valid.map(c => {
+    const score = c.originalScore!, gp = scoreToGPA(score, algo)
+    const gain = (extra: number) => (scoreToGPA(Math.min(100, score + extra), algo) - gp) * gpaWeight(c, algo) / total
+    return { id: c.id, name: c.courseName, score, credits: c.credits, '+5': gain(5), '+10': gain(10), '+15': gain(15), '+20': gain(20) }
+  }).sort((a, b) => b['+10'] - a['+10']).slice(0, 8)
+}
+
+export const scoreRanges = ['<60', '60–<70', '70–<80', '80–<90', '90–100']
+export function distribution(courses: ScoreRecord[], key: ScoreKey) {
+  const counts = [0, 0, 0, 0, 0]
+  for (const c of courses) {
+    const value = courseScore(c, key)
+    if (value != null) counts[value < 60 ? 0 : Math.min(4, Math.floor(value / 10) - 5)]++
+  }
+  return counts
+}
+
+export function resolveAlgorithm(id?: string, custom: import('./types').CustomAlgorithm[] = []): AlgorithmConfig {
+  const own = custom.find(a => a.id === id)
+  return own ? customToAlgoConfig(own) : PRESET_ALGORITHMS[id || ''] ??
+    Object.values(PRESET_ALGORITHMS).find(a => a.id === id) ?? STANDARD_4_0
 }
 
 // ============================================================
@@ -569,76 +584,38 @@ export const DEFAULT_WES_CONFIG: WESConfig = {
   excludeCategories: ['体育', '军事理论', '思政类'],
 }
 
-/** 判断课程类别名是否匹配 WES 排除列表（支持模糊匹配） */
-const WES_EXCLUDE_PATTERNS = [
-  /体育/,
-  /军事/,
-  /思政/,
-  /形势与政策/,
-  /毛泽东/,
-  /马克思/,
-  /思想.*道德/,
-  /近代史/,
-  /党史/,
-  /国家安全/,
-  /劳动教育/,
-  /心理健康/,
-  /职业规划/,
-  /就业指导/,
-  /创业/,
-  /大学生.*指导/,
+const wesAliases: Record<string, CourseCategory> = { '专必': '专业必修', '专选': '专业选修', '公选': '其他' }
+const wesNames: [CourseCategory, RegExp][] = [
+  ['体育', /^(大学)?体育(?:课|与健康)?[\sⅠⅡⅢⅣIVX一二三四五六七八0-9（）()]*$/u],
+  ['军事理论', /^(军事理论|军事技能|军训)[\s一二0-9（）()]*$/u],
+  ['思政类', /^(形势与政策|思想道德与法治|马克思主义基本原理|中国近现代史纲要|毛泽东思想和中国特色社会主义理论体系概论)[\s一二三四0-9（）()]*$/u],
 ]
 
-function isWESExcluded(category: string): boolean {
-  if (!category) return false
-  for (const pattern of WES_EXCLUDE_PATTERNS) {
-    if (pattern.test(category)) return true
+/** The detailed table, planner and summary use exactly the same model weights. */
+export function wesCourse(course: ScoreRecord, key: ScoreKey, config = DEFAULT_WES_CONFIG) {
+  const category = wesAliases[course.category] ?? course.category as CourseCategory
+  const excludedCategory = config.excludeCategories.includes(category) ||
+    wesNames.some(([type, pattern]) => config.excludeCategories.includes(type) && pattern.test(course.courseName.trim()))
+  const coeff = excludedCategory ? 0 : config.creditCoefficients[category] ?? config.creditCoefficients['其他'] ?? 1
+  const credits = Number.isFinite(course.credits) && course.credits > 0 && Number.isFinite(coeff) && coeff > 0 ? course.credits * coeff : 0
+  const score = courseScore(course, key)
+  const band = score == null ? undefined : bandFor(score, config.scoreConversion)
+  return { coefficient: coeff, credits, score, gpa: band?.gpa ?? null, grade: band?.grade ?? '—', excluded: credits === 0 || !band }
+}
+
+export function calculateWESGPA(courses: ScoreRecord[], key: ScoreKey, config = DEFAULT_WES_CONFIG): number {
+  let points = 0, credits = 0
+  for (const course of courses) {
+    const row = wesCourse(course, key, config)
+    if (row.excluded || row.gpa == null) continue
+    points += row.credits * row.gpa
+    credits += row.credits
   }
-  return false
+  return credits ? round(points / credits, 2) : 0
 }
 
-/** 判断课程是否应被 WES 排除（检查类别名 + 课程名 + 0 学分课程） */
-function shouldWESExclude(course: ScoreRecord, config: WESConfig = DEFAULT_WES_CONFIG): boolean {
-  // 0 学分课程（如形势与政策）自动排除
-  if (course.credits <= 0) return true
-  // 按配置的排除列表模糊匹配
-  if (isWESExcluded(course.category)) return true
-  // 按课程名模糊匹配（防止类别标签不准）
-  if (isWESExcluded(course.courseName)) return true
-  return false
-}
-
-export function calculateWESGPA(
-  courses: ScoreRecord[],
-  scoreKey: 'originalScore' | 'simulatedScore',
-  config: WESConfig = DEFAULT_WES_CONFIG
-): number {
-  const included = courses.filter(c => !shouldWESExclude(c, config))
-
-  // 调试信息：输出排除的课程
-  const excluded = courses.filter(c => shouldWESExclude(c, config))
-
-  let totalWeighted = 0
-  let totalCredits = 0
-
-  for (const c of included) {
-    const score = scoreKey === 'originalScore' ? c.originalScore : (c.simulatedScore ?? c.originalScore)
-    const gpa = scoreToGPA(score, WES_4_0)
-    const coeff = config.creditCoefficients[c.category] ?? 0.75
-    const usCredits = c.credits * coeff
-
-    if (usCredits > 0) {
-      totalWeighted += gpa * usCredits
-      totalCredits += usCredits
-    }
-  }
-
-  return totalCredits === 0 ? 0 : Math.round((totalWeighted / totalCredits) * 100) / 100
-}
-
-/** 补齐 — 导入（给 import.ts 用的） */
-export function getWESExcludedCourses(courses: ScoreRecord[], config: WESConfig = DEFAULT_WES_CONFIG): ScoreRecord[] {
-  return courses.filter(c => shouldWESExclude(c, config))
+export function getWESExcludedCourses(courses: ScoreRecord[], config = DEFAULT_WES_CONFIG): ScoreRecord[] {
+  return courses.filter(c => wesCourse(c, 'originalScore', config).excluded)
 }
 
 // ============================================================
@@ -671,8 +648,8 @@ export function getSemesterStats(
       simulatedArithAvg: arithmeticAvg(list, 'simulatedScore'),
       originalGPA: calculateGPA(list, 'originalScore', algo),
       simulatedGPA: calculateGPA(list, 'simulatedScore', algo),
-      hasModifications: list.some(c => c.simulatedScore !== null),
-      modifiedCount: list.filter(c => c.simulatedScore !== null).length,
+      hasModifications: list.some(isModified),
+      modifiedCount: list.filter(isModified).length,
       correctedCount: list.filter(c => c.isCorrected).length,
     })
   }
@@ -693,204 +670,86 @@ export function calculateReverseTargets(
   lockedScores: Map<string, number>,
   targetType: 'gpa' | 'weighted' | 'arithmetic' = 'gpa'
 ): ReverseResult {
-  const fixedTotalCredits = fixedCourses.reduce((s, c) => s + c.credits, 0)
-  const selectedTotalCredits = selectedCourses.reduce((s, c) => s + c.credits, 0)
-  const totalCredits = fixedTotalCredits + selectedTotalCredits
-  const totalCount = fixedCourses.length + selectedCourses.length
-
-  if (totalCredits === 0 || totalCount === 0) {
-    return {
-      mode: 'retake', targetGPA: targetValue, currentGPA: 0, gap: 0, targetType,
-      targets: [], achievable: false, estimatedGPA: 0, estimatedWeightedAvg: 0, estimatedArithAvg: 0,
-      warningMessage: '没有可用的课程数据',
-    }
+  const gpInputs = targetType === 'gpa' && algo.type === 'grade'
+  const limit = targetType === 'gpa' ? algo.maxGPA : 100
+  const baseline = (c: ScoreRecord) => gpInputs ? courseGPA(c, 'simulatedScore', algo) : courseScore(c, 'simulatedScore')
+  const metric = (list: ScoreRecord[]) => targetType === 'gpa' ? rawGPA(list, 'simulatedScore', algo)
+    : mean(list, c => courseScore(c, 'simulatedScore'), c => targetType === 'weighted' ? c.credits : 1)
+  const change = (c: ScoreRecord, value: number): ScoreRecord => gpInputs ? { ...c, simulatedGP: value } : { ...c, simulatedScore: value }
+  const inputMax = gpInputs ? algo.maxGPA : 100
+  const eligible = selectedCourses.filter(c => targetType === 'arithmetic' ||
+    (targetType === 'weighted' ? c.credits > 0 : gpaWeight(c, algo) > 0))
+  const ids = new Set(eligible.map(c => c.id))
+  const fixed = [...fixedCourses, ...selectedCourses.filter(c => !ids.has(c.id))]
+  const all = [...fixed, ...eligible]
+  const current = metric(all)
+  const currentGPA = summarize(all, 'simulatedScore', algo).gpa
+  const invalidLock = eligible.some(c => lockedScores.has(c.id) && !inRange(lockedScores.get(c.id), inputMax))
+  const valueAt = (c: ScoreRecord, threshold: number) => {
+    const lock = lockedScores.get(c.id)
+    return inRange(lock, inputMax) ? lock : Math.max(baseline(c) ?? 0, threshold)
   }
-
-  // currentGPA 始终为真实 GPA（用于参考），gap 按目标度量空间计算
-  const currentGPA = calculateGPA([...fixedCourses, ...selectedCourses], 'originalScore', algo)
-
-  // 计算当前在目标度量空间中的值
-  let currentInTargetMetric: number
-  if (targetType === 'gpa') {
-    currentInTargetMetric = currentGPA
-  } else if (targetType === 'weighted') {
-    const totalW = [...fixedCourses, ...selectedCourses].reduce((s, c) => s + (c.simulatedScore ?? c.originalScore) * c.credits, 0)
-    currentInTargetMetric = totalCredits > 0 ? totalW / totalCredits : 0
-  } else {
-    const totalA = [...fixedCourses, ...selectedCourses].reduce((s, c) => s + (c.simulatedScore ?? c.originalScore), 0)
-    currentInTargetMetric = totalCount > 0 ? totalA / totalCount : 0
+  const project = (threshold: number) => [...fixed, ...eligible.map(c => change(c, valueAt(c, threshold)))]
+  // Keep higher existing grades, then find the lowest shared floor that actually reaches the
+  // target. Compare the unrounded result, including locked courses and model-specific credits.
+  const discrete = gpInputs && algo.mapping.length ? algo.mapping.map(m => m.gpa)
+    : !gpInputs && targetType === 'gpa' && algo.type === 'segmented' ? algo.mapping.map(m => m.min) : null
+  const choices = discrete ? [...new Set([0, ...discrete])].filter(v => inRange(v, inputMax)).sort((a,b) => a-b) : null
+  const floorAt = (index: number) => choices ? choices[index] : index / 100
+  // Check discrete breakpoints or hundredths of a point against the unrounded target.
+  let low = 0, high = choices ? choices.length - 1 : Math.round(inputMax * 100)
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    const value = metric(project(floorAt(mid)))
+    if (value != null && value + 1e-10 >= targetValue) high = mid
+    else low = mid + 1
   }
-  const gap = targetValue - currentInTargetMetric
+  const threshold = floorAt(low), projected = project(threshold)
+  const finalValue = metric(projected)
+  const achieved = finalValue != null && finalValue + 1e-10 >= targetValue
 
-  // 分离已锁定 / 未锁定课程
-  const lockedCourses: ScoreRecord[] = []
-  const unlockedCourses: ScoreRecord[] = []
-  for (const c of selectedCourses) {
-    if (lockedScores.has(c.id)) lockedCourses.push(c)
-    else unlockedCourses.push(c)
-  }
-
-  const unlockedTotalCredits = unlockedCourses.reduce((s, c) => s + c.credits, 0)
-  const unlockedCount = unlockedCourses.length
-
-  // 计算固定课程和锁定课程在目标度量空间中的贡献
-  let fixedContribution = 0
-  for (const c of fixedCourses) {
-    const score = c.simulatedScore ?? c.originalScore
-    if (targetType === 'gpa') fixedContribution += scoreToGPA(score, algo) * c.credits
-    else if (targetType === 'weighted') fixedContribution += score * c.credits
-    else fixedContribution += score
-  }
-
-  let lockedContribution = 0
-  for (const c of lockedCourses) {
-    const score = lockedScores.get(c.id)!
-    if (targetType === 'gpa') lockedContribution += scoreToGPA(score, algo) * c.credits
-    else if (targetType === 'weighted') lockedContribution += score * c.credits
-    else lockedContribution += score
-  }
-
-  // 目标总量
-  const targetTotal = (targetType === 'arithmetic')
-    ? targetValue * totalCount
-    : targetValue * totalCredits
-
-  const remaining = targetTotal - fixedContribution - lockedContribution
-  const divisor = targetType === 'arithmetic' ? unlockedCount : unlockedTotalCredits
-
-  // 每门未锁定课程需要的度量值
-  const neededValue = divisor > 0 ? remaining / divisor : 0
-
-  // 生成 targets
-  const targets: ReverseTarget[] = []
-
-  for (const c of unlockedCourses) {
-    let suggestedScore: number
-    if (targetType === 'gpa') {
-      suggestedScore = reverseScoreFromGPA(neededValue, algo, c.credits)
-    } else {
-      suggestedScore = neededValue
-    }
-    const rounded = Math.max(0, Math.min(100, Math.round(suggestedScore)))
-
-    targets.push({
-      courseId: c.id,
-      courseName: c.courseName,
-      credits: c.credits,
-      currentScore: c.originalScore,
-      suggestedScore: rounded,
-      locked: false,
-      lockedValue: null,
-      gpaContribution: scoreToGPA(rounded, algo) * c.credits / totalCredits,
-      difficultyStars: Math.max(1, Math.min(3, Math.ceil((rounded - c.originalScore) / 10))),
-      boundaryGain: checkBoundaryGain(c.originalScore, rounded, algo),
-      overflow: suggestedScore > 100,
-    })
-  }
-
-  for (const c of lockedCourses) {
-    const score = lockedScores.get(c.id)!
-    targets.push({
-      courseId: c.id,
-      courseName: c.courseName,
-      credits: c.credits,
-      currentScore: c.originalScore,
-      suggestedScore: score,
-      locked: true,
-      lockedValue: score,
-      gpaContribution: scoreToGPA(score, algo) * c.credits / totalCredits,
-      difficultyStars: Math.max(1, Math.min(3, Math.ceil((score - c.originalScore) / 10))),
-      boundaryGain: checkBoundaryGain(c.originalScore, score, algo),
-      overflow: false,
-    })
-  }
-
-  // 从最终分数计算三种预估指标
-  const scoreMap = new Map(targets.map(t => [t.courseId, t.suggestedScore]))
-  let totalGPASum = 0, totalWeightedSum = 0, totalArithSum = 0
-  for (const c of [...fixedCourses, ...selectedCourses]) {
-    const score = scoreMap.get(c.id) ?? (c.simulatedScore ?? c.originalScore)
-    totalGPASum += scoreToGPA(score, algo) * c.credits
-    totalWeightedSum += score * c.credits
-    totalArithSum += score
-  }
-
-  const estimatedGPA = Math.round(totalGPASum / totalCredits * 100) / 100
-  const estimatedWeightedAvg = Math.round(totalWeightedSum / totalCredits * 10) / 10
-  const estimatedArithAvg = totalCount > 0 ? Math.round(totalArithSum / totalCount * 10) / 10 : 0
-
-  // achievable 基于目标类型判断
-  const tolerance = targetType === 'gpa' ? 0.01 : 0.1
-  let estimated: number
-  if (targetType === 'gpa') estimated = estimatedGPA
-  else if (targetType === 'weighted') estimated = estimatedWeightedAvg
-  else estimated = estimatedArithAvg
-
-  const achievable = estimated >= targetValue - tolerance && !targets.some(t => t.overflow)
-
+  const weights = projected.reduce((sum, c) => sum + (courseGPA(c, 'simulatedScore', algo) == null ? 0 : gpaWeight(c, algo)), 0)
+  const attainable = finalValue
   let warningMessage: string | null = null
-  if (!achievable) {
-    if (targets.some(t => t.overflow)) {
-      warningMessage = '部分课程建议分数超出100分上限，请解锁或增加重修科目'
-    } else {
-      const label = targetType === 'gpa' ? 'GPA' : targetType === 'weighted' ? '加权均分' : '算术均分'
-      warningMessage = `当前锁定条件下无法达到目标${label} ${targetValue}，预估最高 ${estimated}`
-    }
-  }
+  if (!inRange(targetValue, limit)) warningMessage = '目标值须在 0 到 ' + limit + ' 之间。'
+  else if (invalidLock) warningMessage = '锁定值超出范围，请重新填写。'
+  else if (!eligible.length || attainable == null) warningMessage = '请选择至少一门参与该指标计算的课程。'
+  else if (!achieved) warningMessage = '在当前选课与锁定条件下，最高可达 ' + round(attainable, 4) + '。'
 
+  const targets = eligible.map(c => {
+    const value = valueAt(c, threshold), prior = baseline(c) ?? 0
+    const gp = courseGPA(change(c, value), 'simulatedScore', algo) ?? 0
+    return {
+      courseId: c.id, courseName: c.courseName, credits: c.credits, currentScore: baseline(c),
+      suggestedScore: value, locked: lockedScores.has(c.id), lockedValue: lockedScores.get(c.id) ?? null,
+      gpaContribution: weights ? gp * gpaWeight(c, algo) / weights : 0,
+      difficultyStars: Math.max(1, Math.min(3, Math.ceil((value-prior) / (gpInputs ? .4 : 10)))),
+      boundaryGain: !gpInputs && value-prior <= 5 && gp > (courseGPA(c, 'simulatedScore', algo) ?? 0),
+      overflow: false,
+    }
+  })
+  const estimates = summarize(projected, 'simulatedScore', algo)
   return {
-    mode: 'retake',
-    targetGPA: targetValue,
-    currentGPA,
-    gap,
-    targetType,
-    targets,
-    achievable,
-    estimatedGPA,
-    estimatedWeightedAvg,
-    estimatedArithAvg,
-    warningMessage,
+    mode: 'retake', targetGPA: targetValue, currentGPA, gap: current == null ? null : targetValue - current, targetType,
+    inputUnit: gpInputs ? 'gpa' : 'score', targets, achievable: warningMessage == null,
+    estimatedGPA: estimates.gpa, estimatedWeightedAvg: estimates.weighted,
+    estimatedArithAvg: estimates.arithmetic, warningMessage,
   }
-}
-
-function reverseScoreFromGPA(targetGPA: number, algo: AlgorithmConfig, _credits: number): number {
-  if (algo.type === 'linear') {
-    return Math.min(100, (targetGPA + 5) * 10)
-  }
-
-  // 分段映射：找目标 GPA 对应的最低分数
-  const mapping = [...algo.mapping].sort((a, b) => b.gpa - a.gpa)
-  for (const m of mapping) {
-    if (m.gpa <= targetGPA) {
-      return m.min
-    }
-  }
-  return 60
-}
-
-function checkBoundaryGain(current: number, target: number, algo: AlgorithmConfig): boolean {
-  const currentGPA = scoreToGPA(current, algo)
-  const targetGPA = scoreToGPA(target, algo)
-  if (targetGPA <= currentGPA) return false
-  return (target - current) <= 5
 }
 
 // ============================================================
 // 辅助工具
 // ============================================================
 
-export function getEffectiveScore(record: ScoreRecord, useSimulated: boolean): number {
-  if (useSimulated && record.simulatedScore !== null) {
-    return record.simulatedScore
-  }
-  return record.originalScore
+export function getEffectiveScore(record: ScoreRecord, useSimulated: boolean): number | null {
+  return courseScore(record, useSimulated ? 'simulatedScore' : 'originalScore')
 }
 
 export function findNextBoundary(score: number, algo: AlgorithmConfig): { min: number; gpa: number } | null {
-  if (algo.type === 'linear') return null
+  if (algo.type === 'linear' || algo.type === 'continuous' || !inRange(score, algo.type === 'grade' ? algo.maxGPA : 100)) return null
 
   const current = scoreToGPA(score, algo)
-  const mapping = [...algo.mapping].sort((a, b) => b.gpa - a.gpa)
+  const mapping = [...algo.mapping].sort((a, b) => a.min - b.min)
 
   for (const m of mapping) {
     if (m.gpa > current && m.min > score) {
@@ -914,17 +773,18 @@ export interface AlgorithmDetectionResult {
 
 /**
  * 通过已导入课程的成绩-绩点对，自动检测学校使用的 GPA 算法。
- * 逐个预设算法拟合，选误差最小的；同时检测自定义线性映射。
+ * 只选择有唯一证据的预设算法。
  */
 export function detectAlgorithm(courses: ScoreRecord[]): AlgorithmDetectionResult | null {
   // 只用有绩点数据的课程
-  const withGP = courses.filter(c => c.gradePoint != null && c.gradePoint > 0)
+  const withGP = courses.filter((c): c is ScoreRecord & {originalScore: number; gradePoint: number} => !c.isPredicted && inRange(c.originalScore) && inRange(c.gradePoint, 5))
   if (withGP.length < 3) return null  // 数据不足
 
   const results: AlgorithmDetectionResult[] = []
 
   // 1. 逐个预设算法测试
   for (const [id, algo] of Object.entries(PRESET_ALGORITHMS)) {
+    if (algo.type === 'grade' || algo.id === WES_4_0.id) continue
     let totalError = 0
     let exactMatch = 0
 
@@ -948,70 +808,9 @@ export function detectAlgorithm(courses: ScoreRecord[]): AlgorithmDetectionResul
     })
   }
 
-  // 2. 检测自定义线性映射: GPA = a * score + b
-  //    用最小二乘法拟合
-  const scores = withGP.map(c => c.originalScore)
-  const gps = withGP.map(c => c.gradePoint!)
-  const n = scores.length
-  const sumX = scores.reduce((a, b) => a + b, 0)
-  const sumY = gps.reduce((a, b) => a + b, 0)
-  const sumXY = scores.reduce((a, _, i) => a + scores[i] * gps[i], 0)
-  const sumX2 = scores.reduce((a, b) => a + b * b, 0)
-
-  const denom = n * sumX2 - sumX * sumX
-  if (Math.abs(denom) > 0.001) {
-    const slope = (n * sumXY - sumX * sumY) / denom
-    const intercept = (sumY - slope * sumX) / n
-
-    // 检查是否接近已知公式
-    // 常见: GPA = score/10 - 5 (slope=0.1, intercept=-5)
-    //       GPA = score/25 (slope=0.04, intercept=0)
-
-    let totalError = 0
-    let exactMatch = 0
-    for (const c of withGP) {
-      const predicted = Math.max(0, Math.min(5, slope * c.originalScore + intercept))
-      const actual = c.gradePoint!
-      const error = Math.abs(predicted - actual)
-      totalError += error
-      if (error < 0.05) exactMatch++
-    }
-
-    const mae = totalError / withGP.length
-    const exactRatio = exactMatch / withGP.length
-
-    // 只有当线性拟合明显好于预设算法时才用自定义
-    const bestPreset = results.reduce((best, r) => r.mae < best.mae ? r : best, results[0])
-    if (mae < bestPreset.mae - 0.02 && exactRatio > 0.7) {
-      // 判断是否是已知公式
-      let name = `自定义线性 (${slope.toFixed(3)}×分数${intercept >= 0 ? '+' : ''}${intercept.toFixed(2)})`
-      if (Math.abs(slope - 0.1) < 0.005 && Math.abs(intercept - (-5)) < 0.1) {
-        name = '5.0制线性 (分数/10-5)'
-      }
-
-      results.push({
-        algorithmId: 'custom_linear',
-        algorithmName: name,
-        confidence: exactRatio,
-        matchedCount: withGP.length,
-        mae,
-      })
-    }
-  }
-
-  // 3. 选最佳结果
-  if (results.length === 0) return null
-
-  // 按 MAE 升序，相同 MAE 取 confidence 高的
-  results.sort((a, b) => {
-    if (Math.abs(a.mae - b.mae) > 0.01) return a.mae - b.mae
-    return b.confidence - a.confidence
-  })
-
+  results.sort((a,b) => a.mae - b.mae)
   const best = results[0]
-
-  // 至少要有一定置信度才自动切换
-  if (best.confidence < 0.5 && best.mae > 0.3) return null
-
+  // With equally good fits these course pairs cannot identify the institution's scale.
+  if (!best || best.confidence < 1 || results.slice(1).some(r => r.mae <= best.mae + .005)) return null
   return best
 }

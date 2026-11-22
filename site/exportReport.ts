@@ -29,7 +29,7 @@ export function chartCanvas(spec: ChartSpec) {
     ctx.strokeStyle = '#dce3da'; ctx.beginPath(); ctx.moveTo(mid,top); ctx.lineTo(mid,bottom+12); ctx.stroke()
     const row = (bottom-top) / Math.max(1,spec.labels.length)
     spec.labels.forEach((label,i)=>{
-      const y = top + (i+.5)*row, amount=spec.simulated[i], width=Math.abs(amount)/spec.max*(right-left)*.4
+      const y = top + (i+.5)*row, amount=spec.simulated[i] ?? 0, width=Math.abs(amount)/spec.max*(right-left)*.4
       ctx.fillStyle=ink; ctx.textAlign='right';ctx.fillText(fit(ctx,label,210),left-18,y+5)
       ctx.fillStyle=amount>=0?green:amber
       ctx.fillRect(amount>=0?mid:mid-width,y-5,width,10)
@@ -54,10 +54,16 @@ export function chartCanvas(spec: ChartSpec) {
       ctx.fillStyle=color;ctx.strokeStyle=color;ctx.lineWidth=3
       if(spec.kind==='bar') {
         const width=Math.min(40,slot*.27)
-        values.forEach((value,i)=>{ctx.fillRect(x(i)+(j===0?-width-2:2),y(value),width,bottom-y(value));ctx.textAlign='center';ctx.fillText(String(value),x(i)+(j===0?-width/2-2:width/2+2),y(value)-9)})
+        values.forEach((value,i)=>{if (value == null) return; ctx.fillRect(x(i)+(j===0?-width-2:2),y(value),width,bottom-y(value));ctx.textAlign='center';ctx.fillText(String(value),x(i)+(j===0?-width/2-2:width/2+2),y(value)-9)})
       } else {
-        ctx.beginPath();values.forEach((value,i)=>i?ctx.lineTo(x(i),y(value)):ctx.moveTo(x(i),y(value)));ctx.stroke()
-        values.forEach((value,i)=>{ctx.beginPath();ctx.arc(x(i),y(value),4.5,0,Math.PI*2);ctx.fill();ctx.textAlign='center';const above=j===0?value>=spec.simulated[i]:value>spec.original[i];ctx.fillText(value.toFixed(2),x(i),y(value)+(above?-12:23))})
+        ctx.beginPath()
+        values.forEach((value,i) => {
+          if (value == null) return
+          if (i > 0 && values[i-1] != null) ctx.lineTo(x(i), y(value))
+          else ctx.moveTo(x(i), y(value))
+        })
+        ctx.stroke()
+        values.forEach((value,i)=>{if (value == null) return; ctx.beginPath();ctx.arc(x(i),y(value),4.5,0,Math.PI*2);ctx.fill();ctx.textAlign='center';const above=j===0?value>=(spec.simulated[i] ?? 0):value>(spec.original[i] ?? 0);ctx.fillText(value.toFixed(2),x(i),y(value)+(above?-12:23))})
       }
     }
   }

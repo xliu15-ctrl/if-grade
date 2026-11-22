@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { readJSON, writeJSON } from '../src/libs/api'
-import { calculateGPA, PRESET_ALGORITHMS, weightedAvg } from '../src/libs/gpa-engine'
+import { summarize } from '../src/libs/gpa-engine'
 import type { ScoreRecord } from '../src/libs/types'
 
 type School = { name: string; level: string; reason: string; sourceUrl?: string }
@@ -22,8 +22,8 @@ function publicLink(value?: string) {
   try { const url = new URL(value || ''); return url.protocol === 'https:' ? url.href : undefined } catch { return undefined }
 }
 
-export default function Advisor({ workspaceId, courses, connection, onConnectionChange }: {
-  workspaceId: string; courses: ScoreRecord[]
+export default function Advisor({ workspaceId, courses, algorithm, connection, onConnectionChange }: {
+  workspaceId: string; courses: ScoreRecord[]; algorithm: import('../src/libs/types').AlgorithmConfig
   connection: { base: string; model: string; apiKey: string }
   onConnectionChange: (value: { base: string; model: string; apiKey: string }) => void
 }) {
@@ -34,7 +34,8 @@ export default function Advisor({ workspaceId, courses, connection, onConnection
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const controller = useRef<AbortController | null>(null)
-  const fingerprint = JSON.stringify(courses)
+  const real = courses.filter(c => !c.isPredicted)
+  const fingerprint = JSON.stringify([real, algorithm, direction, goals])
 
   useEffect(() => {
     let alive = true
@@ -65,12 +66,11 @@ export default function Advisor({ workspaceId, courses, connection, onConnection
           messages: [
             { role: 'system', content: '你是学业规划助手。分析用户提供的真实课程与目标，区分原始与模拟成绩。给出优势、薄弱科目、具体可执行的提分计划。方向为留学或国内升学时给出选校候选与理由，毕业达标时给出缺口与改善计划。缺少专业、语言或地区等信息时明确哪些结论还需补充信息。你没有实时联网结果，不得编造最新录取分数、录取概率、官方认证或已核验的引用。学校仅作为待核实的候选，来源链接仅在确知时提供。只输出 JSON，格式为 {"report":"中文分析正文","schools":[{"name":"学校名","level":"冲刺/匹配/稳妥/待核实","reason":"匹配理由及待核实条件","sourceUrl":"可选的学校官方HTTPS链接"}]}。' },
             { role: 'user', content: JSON.stringify({
-              direction, goals, courses,
+              direction, goals, courses: real,
               metrics: {
-                algorithm: '标准 4.0',
-                originalGPA: calculateGPA(courses, 'originalScore', PRESET_ALGORITHMS.standard_4_0),
-                simulatedGPA: calculateGPA(courses, 'simulatedScore', PRESET_ALGORITHMS.standard_4_0),
-                average: weightedAvg(courses, 'originalScore'),
+                algorithm: algorithm.name,
+                original: summarize(real, 'originalScore', algorithm),
+                simulated: summarize(real, 'simulatedScore', algorithm),
               },
             }) },
           ],
@@ -112,14 +112,14 @@ export default function Advisor({ workspaceId, courses, connection, onConnection
         </select></label>
         <label>你的目标<textarea rows={4} value={goals} disabled={busy} placeholder="目标地区、专业、申请阶段、语言成绩或毕业要求…" onChange={event => setGoals(event.target.value)} /></label>
         <p className="report-footnote">生成时会将当前课程、成绩和目标发送到上方接口。</p>
-        <button className="button button-primary" disabled={busy || !apiKey.trim() || !model.trim() || !courses.length}>{busy ? '正在分析…' : '生成分析与建议'}</button>
+        <button className="button button-primary" disabled={busy || !apiKey.trim() || !model.trim() || !real.length}>{busy ? '正在分析…' : '生成分析与建议'}</button>
         {busy && <button type="button" className="button" onClick={() => controller.current?.abort()}>停止生成</button>}
         {error && <p className="import-error" role="alert">{error}</p>}
       </form>
       <div className="advisor-results" aria-live="polite">
         {result ? <>
           <h3>AI 成绩分析</h3>
-          {result.fingerprint !== fingerprint && <p className="saved-message">成绩已更新，可以重新生成分析。</p>}
+          {result.fingerprint !== fingerprint && <p className="saved-message">成绩、算法或目标已更新，可以重新生成分析。</p>}
           <div className="advisor-report">{result.report}</div>
           {result.schools.length > 0 && <section className="school-suggestions"><h3>选校候选</h3><p className="report-footnote">候选建议由模型生成，请核实学校官网的专业要求与最新申请条件。</p>
             {result.schools.map((school, index) => <article key={index}><div><h4>{school.name}</h4><span>{school.level}</span></div><p>{school.reason}</p>

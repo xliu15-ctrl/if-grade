@@ -1,5 +1,7 @@
 {
   "scripts": {
+    "test": "node --test scripts/check-grades.mjs",
+    "prebuild": "npm test",
     "build": "node scripts/build-site.mjs --browser && tailwindcss -i site/browser.css -o site-dist/app.css --content \"./site/**/*.{tsx,html},./src/**/*.{tsx,ts}\" --minify",
     "preview": "node site/server.mjs --local"
   },

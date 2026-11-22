@@ -59,13 +59,7 @@
 .planning-panel .bg-primary { background: #3e5942; color: #fff; }
 .planning-panel .text-primary-foreground { color: #fff; }
 .retake-picker .bg-primary { background: #3e5942; color: white; }
-@media (max-width: 1050px) {
-  .header-content { min-height: 108px; align-items: flex-start; padding-top: 10px; }
-  .header-content nav { top: 57px; left: 0; right: 0; transform: none; justify-content: center; gap: 22px; }
-}
 @media (max-width: 700px) {
-  .header-content nav { justify-content: flex-start; max-width: 100%; overflow-x: auto; scrollbar-width: none; padding-bottom: 9px; }
-  .header-content nav a { flex: none; }
   .advisor-layout { grid-template-columns: minmax(0, 1fr); }
   .advisor-settings, .advisor-results { padding: 18px; }
   .planning-summary .flex { flex-wrap: wrap; }

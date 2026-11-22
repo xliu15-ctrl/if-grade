@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Check, FileUp, Plus, ScanLine, Sparkles, Upload } from 'lucide-react'
 import { ensureDataFile, SCORES_FILE, writeJSON } from '../src/libs/api'
+import { detectAlgorithm, PRESET_ALGORITHMS } from '../src/libs/gpa-engine'
 import { COURSE_CATEGORIES, type ScoreRecord } from '../src/libs/types'
 import { parseWithAgent, type AgentConnection } from './agent'
 import AgentSettings from './AgentSettings'
@@ -12,13 +13,14 @@ const fields = [
   { key: 'score', label: '成绩', headers: ['成绩', '分数', '百分制成绩', '成绩分数', '总评成绩', 'score', 'grade'] },
   { key: 'semester', label: '学期', headers: ['学期', '学期序号', 'semester', 'term'] },
   { key: 'category', label: '课程类型', headers: ['课程类型', '课程性质', '课程类别', '类别', 'category'] },
+  { key: 'gradePoint', label: '原始绩点（选填）', headers: ['原始绩点', '绩点', '课程绩点', 'gradepoint', 'gp'] },
 ] as const
 
 type FieldKey = typeof fields[number]['key']
 type Draft = Record<FieldKey, string> & { id: string }
 
 function newDraft(values: Partial<Draft> = {}): Draft {
-  return { id: crypto.randomUUID(), courseName: '', credits: '', score: '', semester: '1', category: '其他', ...values }
+  return { id: crypto.randomUUID(), courseName: '', credits: '', score: '', gradePoint: '', semester: '1', category: '其他', ...values }
 }
 
 function agentDraft(record: Record<string, unknown>): Draft {
@@ -27,6 +29,7 @@ function agentDraft(record: Record<string, unknown>): Draft {
     courseName: text(record.courseName),
     credits: text(record.credits),
     score: text(record.score),
+    gradePoint: text(record.gradePoint),
     semester: text(record.semester),
     category: text(record.category) || '其他',
   })
@@ -36,7 +39,8 @@ function validRow(row: Draft) {
   const credits = Number(row.credits)
   const score = Number(row.score)
   const semester = Number(row.semester)
-  return Boolean(row.courseName.trim() && row.credits.trim() && row.score.trim()) &&
+  return Boolean(row.courseName.trim() && row.credits.trim() && (row.score.trim() || row.gradePoint.trim())) &&
+    (!row.gradePoint.trim() || (Number.isFinite(Number(row.gradePoint)) && Number(row.gradePoint) >= 0 && Number(row.gradePoint) <= 5)) &&
     Number.isFinite(credits) && credits >= 0 &&
     Number.isFinite(score) && score >= 0 && score <= 100 &&
     Number.isSafeInteger(semester) && semester >= 1
@@ -83,16 +87,20 @@ async function parseFile(file: File): Promise<Draft[]> {
     return fields.map(field => cells.findIndex(cell => field.headers.some(header => header === cell)))
   }
 
-  const headerIndex = rows.findIndex(row => findColumns(row).slice(0, 3).every(index => index >= 0))
-  if (headerIndex < 0) throw new Error('表头需要包含「课程名称」「学分」「成绩」。可下载模板后粘贴数据。')
+  const headerIndex = rows.findIndex(row => {
+    const [name, credits, score, , , gp] = findColumns(row)
+    return name >= 0 && credits >= 0 && (score >= 0 || gp >= 0)
+  })
+  if (headerIndex < 0) throw new Error('表头需要课程名称、学分，以及成绩或原始绩点。可下载模板后粘贴数据。')
 
-  const [name, credits, score, semester, category] = findColumns(rows[headerIndex])
+  const [name, credits, score, semester, category, gp] = findColumns(rows[headerIndex])
   const drafts = rows.slice(headerIndex + 1)
     .filter(row => row.some(cell => cellText(cell) !== ''))
     .map(row => newDraft({
       courseName: cellText(row[name]),
       credits: cellText(row[credits]),
       score: cellText(row[score]),
+      gradePoint: cellText(row[gp]),
       semester: cellText(row[semester]) || '1',
       category: cellText(row[category]) || '其他',
     }))
@@ -101,7 +109,7 @@ async function parseFile(file: File): Promise<Draft[]> {
 }
 
 function courseKey(course: ScoreRecord) {
-  return JSON.stringify([course.courseName.trim().toLowerCase(), course.semester, course.credits, course.originalScore])
+  return JSON.stringify([course.courseName.trim().toLowerCase(), course.semester, course.credits, course.originalScore, course.gradePoint ?? null, course.category.trim()])
 }
 
 export default function BrowserImport({ workspaceId, onConfirm, agentConnection, onAgentConnectionChange }: {
@@ -155,16 +163,16 @@ export default function BrowserImport({ workspaceId, onConfirm, agentConnection,
     setError('')
     try {
       const existing = await ensureDataFile<ScoreRecord[]>(workspaceId, SCORES_FILE, [])
-      await ensureDataFile(workspaceId, 'data/gpa_config.json', { activeAlgorithm: 'standard_4_0' })
       let nextOrder = existing.reduce((max, course) => Math.max(max, course.order), -1) + 1
-      const seen = new Set(existing.map(courseKey))
+      const seen = new Set(existing.filter(c => !c.isPredicted).map(courseKey))
       const added: ScoreRecord[] = []
       for (const row of drafts) {
         const course: ScoreRecord = {
           id: row.id,
           courseName: row.courseName.trim(),
           credits: Number(row.credits),
-          originalScore: Number(row.score),
+          originalScore: row.score.trim() ? Number(row.score) : null,
+          gradePoint: row.gradePoint.trim() ? Number(row.gradePoint) : null,
           semester: Number(row.semester),
           category: row.category.trim() || '其他',
           simulatedScore: null,
@@ -179,6 +187,10 @@ export default function BrowserImport({ workspaceId, onConfirm, agentConnection,
         nextOrder += 1
         added.push(course)
       }
+      const detected = !existing.length ? detectAlgorithm(added) : null
+      const initialAlgorithm = detected?.confidence === 1 && PRESET_ALGORITHMS[detected.algorithmId]
+        ? detected.algorithmId : added.length && added.every(c => c.gradePoint != null) ? 'transcript_gpa' : 'standard_4_0'
+      await ensureDataFile(workspaceId, 'data/gpa_config.json', { activeAlgorithm: initialAlgorithm })
       if (added.length) await writeJSON(workspaceId, SCORES_FILE, [...existing, ...added])
       onConfirm(added.length, drafts.length - added.length)
     } catch {
@@ -268,7 +280,7 @@ export default function BrowserImport({ workspaceId, onConfirm, agentConnection,
           <div className="review-heading">
             <div>
               <h3>核对课程 <span>{drafts.length} 门</span></h3>
-              <p>成绩范围 0–100，学分可为 0，学期填写从 1 开始的序号。完全重复的课程会跳过。</p>
+              <p>百分成绩（0–100）和原始绩点至少填写一项，学分可为 0，学期填写从 1 开始的序号。完全重复的课程会跳过。</p>
             </div>
           </div>
           <div className="review-scroll">
@@ -284,7 +296,7 @@ export default function BrowserImport({ workspaceId, onConfirm, agentConnection,
                       <td key={key} data-label={label}>
                         <input aria-label={`第 ${index + 1} 行${label}`}
                           className={key === 'courseName' ? 'course-input' : ''}
-                          inputMode={key === 'semester' ? 'numeric' : key === 'credits' || key === 'score' ? 'decimal' : 'text'}
+                          inputMode={key === 'semester' ? 'numeric' : key === 'credits' || key === 'score' || key === 'gradePoint' ? 'decimal' : 'text'}
                           list={key === 'category' ? 'course-categories' : undefined}
                           value={row[key]} disabled={busy}
                           onChange={event => updateRow(row.id, key, event.target.value)} />

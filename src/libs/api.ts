@@ -47,7 +47,13 @@ export async function readJSON<T>(workspaceId: string, filePath: string): Promis
   if (IS_BROWSER_MODE) {
     const value = localStorage.getItem(browserFileKey(workspaceId, filePath))
     if (value === null) throw new Error('HTTP 404: file not found')
-    return JSON.parse(value) as T
+    const parsed = JSON.parse(value)
+    if (filePath === SCORES_FILE && Array.isArray(parsed)) {
+      // Early versions created an artificial zero-score course when opening an empty term.
+      return parsed.filter(c => !(c?.id?.startsWith('sem_') && c.courseName === '（示例课程，可编辑或删除）' &&
+        c.credits === 0 && c.originalScore === 0 && c.simulatedScore == null && c.gradePoint == null && c.simulatedGP == null)) as T
+    }
+    return parsed as T
   }
   const resp = await fetch(
     `${API_PREFIX}/api/v1/workspaces/${workspaceId}/files/content?filePath=${filePath}`,

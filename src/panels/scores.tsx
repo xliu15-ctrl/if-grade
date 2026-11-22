@@ -6,15 +6,15 @@ import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useVersionCheck } from '../libs/useVersionCheck'
 import type {
   ScoreRecord, AlgorithmConfig, SemesterStats,
-  ReverseTarget, DragState, CourseCategory, ArchiveMeta,
+  ReverseResult, DragState, CourseCategory, ArchiveMeta,
   CustomAlgorithm,
 } from '../libs/types'
 import { COURSE_CATEGORIES, SEMESTER_LABELS } from '../libs/types'
 import {
-  calculateGPA, weightedAvg, arithmeticAvg, getSemesterStats,
-  scoreToGPA, scoreToGrade, gradeToGPA, gradeToScore, getAvailableGrades, gpaToScore, detectAlgorithm,
-  calculateWESGPA, calculateReverseTargets, findNextBoundary,
-  PRESET_ALGORITHMS, DEFAULT_WES_CONFIG, customToAlgoConfig, getWESExcludedCourses,
+  getSemesterStats,
+  validateMappings, scoreToGPA, scoreToGrade, gradeToGPA, gradeToScore, getAvailableGrades, gpaToScore, inRange, courseGPA, isModified, summarize, displayMetric,
+  calculateReverseTargets,
+  PRESET_ALGORITHMS, customToAlgoConfig,
 } from '../libs/gpa-engine'
 import {
   readJSON, writeJSON, ensureDataFile,
@@ -23,6 +23,7 @@ import {
   API_PREFIX, IS_BROWSER_MODE, SCORES_FILE, ensureGradesPlugin,
 } from '../libs/api'
 import { SetupBanner } from '../libs/SetupBanner'
+import { applyProposal, forecastBase, futureRecords, forecast, type FutureCourse } from '../libs/forecast'
 import { chat } from '@knodo/api'
 
 const TRANSCRIPT_FILE = 'data/成绩单.pdf'
@@ -59,6 +60,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   const [customAlgorithms, setCustomAlgorithms] = useState<CustomAlgorithm[]>([])
   const [showCustomAlgoEditor, setShowCustomAlgoEditor] = useState(false)
   const [editingCustomAlgo, setEditingCustomAlgo] = useState<CustomAlgorithm | null>(null)
+  const [ruleError, setRuleError] = useState('')
   const [newAlgoName, setNewAlgoName] = useState('')
   const [newAlgoType, setNewAlgoType] = useState<'grade' | 'segmented'>('grade')
   const [newAlgoMaxGPA, setNewAlgoMaxGPA] = useState('4.0')
@@ -92,8 +94,10 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   const [canUndo, setCanUndo] = useState(false)
 
   // ---- 添加课程状态 ----
+  const [draftSemester, setDraftSemester] = useState<number | null>(null)
+  const [planMessage, setPlanMessage] = useState('')
   const [addingSemester, setAddingSemester] = useState<number | null>(null)
-  const [newCourse, setNewCourse] = useState({ courseName: '', credits: '', score: '', category: '专业必修' as CourseCategory })
+  const [newCourse, setNewCourse] = useState({ courseName: '', credits: '', score: '', gp: '', category: '专业必修' as CourseCategory })
 
   // ---- 学期标题编辑状态 ----
   const [editingSemesterTitle, setEditingSemesterTitle] = useState<number | null>(null)
@@ -102,30 +106,27 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   // ---- 反推状态 ----
   const [showReverse, setShowReverse] = useState(false)
   const [reverseMode, setReverseMode] = useState<'retake' | 'predict'>('retake')
-  const [targetGPA, setTargetGPA] = useState(initCache.targetGPA || '')
+  const [targetGPA, setTargetGPA] = useState<string>(initCache.targetGPA || '')
   // ---- 3D 目标卡片状态 ----
-  const [targetCardIndex, setTargetCardIndex] = useState(initCache.targetCardIndex ?? 0) // 0=GPA, 1=加权均分, 2=算术均分
-  const [targetCardInput, setTargetCardInput] = useState(initCache.targetCardInput || '') // 当前选中卡片的输入值
+  const [targetCardIndex, setTargetCardIndex] = useState<number>(initCache.targetCardIndex ?? 0) // 0=GPA, 1=加权均分, 2=算术均分
+  const [targetCardInput, setTargetCardInput] = useState<string>(initCache.targetCardInput || '') // 当前选中卡片的输入值
   const [selectedRetakeIds, setSelectedRetakeIds] = useState<Set<string>>(new Set())
   const [retakeSearch, setRetakeSearch] = useState('')
   const [retakeSort, setRetakeSort] = useState<'default' | 'lowScore'>('default')
   const [lockedScores, setLockedScores] = useState<Map<string, number>>(new Map())
-  const [retakeResult, setRetakeResult] = useState<ReverseResult | null>(null)
-  const [predictResult, setPredictResult] = useState<ReverseResult | null>(null)
-  const reverseResult = reverseMode === 'retake' ? retakeResult : predictResult
+  const [savedRetake, setRetakeResult] = useState<ReverseResult | null>(null)
+  const [savedPredict, setPredictResult] = useState<ReverseResult | null>(null)
   // 面板可调高度（目标反推和未来预测共用，切换时高度不变）
   const [reversePanelHeight, setReversePanelHeight] = useState(0)
   const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
   const handleRef = useRef<HTMLDivElement>(null)
   const bottomBarRef = useRef<HTMLDivElement>(null)
-  // 保存重修反推的原始结果，供预测模式"反推后成绩"基准使用
-  const [retakeReverseTargets, setRetakeReverseTargets] = useState<ReverseTarget[] | null>(null)
   const [editingTargetId, setEditingTargetId] = useState<string | null>(null)
   const [editTargetValue, setEditTargetValue] = useState('')
   const editTargetOriginalRef = useRef('')
   const [useWES, setUseWES] = useState(false)
   // 未来预测模式下的假设课程
-  const [predictCourses, setPredictCourses] = useState<Array<{ id: string; courseName: string; credits: number; category: CourseCategory; lockedScore: number | null; lockedGP: number | null }>>([])
+  const [predictCourses, setPredictCourses] = useState<FutureCourse[]>([])
   const [predictBase, setPredictBase] = useState<'original' | 'simulated' | 'reverse'>('original')
   const [predictNewName, setPredictNewName] = useState('')
   const [predictNewCredits, setPredictNewCredits] = useState('')
@@ -146,133 +147,79 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   const [renamingArchiveId, setRenamingArchiveId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
 
+  const currentAlgo = getAllAlgorithms(customAlgorithms)[activeAlgoId] || PRESET_ALGORITHMS.standard_4_0
+  const targetAlgo = useWES ? PRESET_ALGORITHMS.wes_4_0 : currentAlgo
+  const sourceKey = JSON.stringify([courses, targetAlgo])
+  const selections = JSON.stringify([...selectedRetakeIds].sort())
+  const retakeKey = JSON.stringify([selections, targetCardIndex, targetCardInput, [...lockedScores]])
+  const retakeBase = savedRetake?.basis === sourceKey && savedRetake.selection === selections ? savedRetake : null
+  const retakeResult = retakeBase?.inputs === retakeKey ? retakeBase : null
+  const predictKey = JSON.stringify([predictBase, predictBase === 'reverse' ? [retakeBase?.inputUnit,retakeBase?.targets] : null, predictCourses, targetCardIndex, targetCardInput])
+  const predictResult = savedPredict?.basis === sourceKey && savedPredict.inputs === predictKey ? savedPredict : null
+  const reverseResult = reverseMode === 'retake' ? retakeResult : predictResult
+  const [loaded, setLoaded] = useState(false)
+
   // ---- 加载数据 ----
   useEffect(() => {
+    let alive = true
     ;(async () => {
       const data = await ensureDataFile<ScoreRecord[]>(workspaceId, SCORES_FILE, [])
       const config = await ensureDataFile<{ activeAlgorithm: string; customAlgorithms?: CustomAlgorithm[] }>(workspaceId, CONFIG_FILE, { activeAlgorithm: 'standard_4_0' })
       config.activeAlgorithm = Object.entries(PRESET_ALGORITHMS).find(([key, value]) =>
         key === config.activeAlgorithm || value.id === config.activeAlgorithm
       )?.[0] || config.activeAlgorithm
+      if (!alive) return
       setCourses(data)
-      setActiveAlgoId(config.activeAlgorithm)
+      setActiveAlgoId(getAllAlgorithms(config.customAlgorithms || [])[config.activeAlgorithm] ? config.activeAlgorithm : 'standard_4_0')
       setCustomAlgorithms(config.customAlgorithms || [])
-      // 同步缓存到 sessionStorage，下次切 Tab 直出
-      try { sessionStorage.setItem(SCORES_CACHE_KEY, JSON.stringify({ courses: data, activeAlgoId: config.activeAlgorithm, targetGPA: saved?.targetGPA || '', targetCardIndex: saved?.targetCardIndex ?? 0 })) } catch {}
+      try { sessionStorage.setItem(SCORES_CACHE_KEY, JSON.stringify({ courses: data, activeAlgoId: config.activeAlgorithm })) } catch {}
 
       // 恢复反推/预测面板状态
       try {
         const saved = await readJSON<{
-          showReverse: boolean; reverseMode: 'retake' | 'predict'; targetGPA: string
+          version?: number; showReverse: boolean; reverseMode: 'retake' | 'predict'; targetGPA: string
           targetCardIndex: number; targetCardInput: string
           useWES: boolean; predictBase: string
-          predictCourses: Array<any>; selectedRetakeIds: string[]
-          lockedScores: [string, number][]; retakeReverseTargets: any[] | null
-          retakeResult: any; predictResult: any; reversePanelHeight: number
+          predictCourses: FutureCourse[]; selectedRetakeIds: string[]
+          lockedScores: [string, number][]
+          retakeResult: ReverseResult | null; predictResult: ReverseResult | null; reversePanelHeight: number
         }>(workspaceId, 'data/reverse_state.json')
+        if (!alive) return
         if (saved) {
           setShowReverse(saved.showReverse)
           setReverseMode(saved.reverseMode)
-          setTargetGPA(saved.targetGPA || '')
+          setTargetGPA(saved.targetCardIndex === 0 ? saved.targetCardInput || '' : '')
           setTargetCardIndex(saved.targetCardIndex ?? 0)
           setTargetCardInput(saved.targetCardInput || '')
           setUseWES(saved.useWES || false)
           setPredictBase(saved.predictBase as any || 'original')
-          setPredictCourses(saved.predictCourses || [])
+          setPredictCourses((saved.predictCourses || []).map(c => saved.version === 2 ? c : { ...c, lockedGP: null }))
           setSelectedRetakeIds(new Set((saved.selectedRetakeIds || []).filter(id => data.some(course => course.id === id && !course.isPredicted))))
-          setLockedScores(new Map(saved.lockedScores || []))
-          setRetakeReverseTargets(saved.retakeReverseTargets || null)
-          setRetakeResult(saved.retakeResult || null)
-          setPredictResult(saved.predictResult || null)
+          if (saved.version === 2) {
+            setLockedScores(new Map(saved.lockedScores || []))
+            setRetakeResult(saved.retakeResult || null)
+            setPredictResult(saved.predictResult || null)
+          }
           if (saved.reversePanelHeight) setReversePanelHeight(saved.reversePanelHeight)
           // 如果面板打开但高度为 0（之前拖到底了），恢复默认 200px
           if (saved.showReverse && saved.reversePanelHeight === 0) setReversePanelHeight(200)
         }
       } catch { /* ignore */ }
 
-      // 自动检测算法（有绩点数据时）
-      if (data.length >= 3 && data.some(c => c.gradePoint != null)) {
-        const allAlgos = getAllAlgorithms(config.customAlgorithms || [])
-        const testAlgo = allAlgos[config.activeAlgorithm] || PRESET_ALGORITHMS.standard_4_0
-        const result = detectAlgorithm(data)
-        if (result && result.algorithmId !== config.activeAlgorithm && result.confidence > 0.5) {
-          setActiveAlgoId(result.algorithmId)
-          await writeJSON(workspaceId, CONFIG_FILE, { ...config, activeAlgorithm: result.algorithmId })
-        }
-      }
-
-      // 初始加载完成，允许清理函数保存状态
-      initialLoadedRef.current = true
+      if (alive) setLoaded(true)
     })()
+    return () => { alive = false }
   }, [workspaceId])
 
-  // ---- 面板切换时保存反推/预测状态 ----
-  const initialLoadedRef = useRef(false)
-  const reverseStateRef = useRef({ showReverse, reverseMode, targetGPA, targetCardIndex, targetCardInput, useWES, predictBase, predictCourses, selectedRetakeIds, lockedScores, retakeReverseTargets, retakeResult, predictResult, reversePanelHeight })
-  reverseStateRef.current = { showReverse, reverseMode, targetGPA, targetCardIndex, targetCardInput, useWES, predictBase, predictCourses, selectedRetakeIds, lockedScores, retakeReverseTargets, retakeResult, predictResult, reversePanelHeight }
-
   useEffect(() => {
-    return () => {
-      if (!initialLoadedRef.current) return // 初始加载未完成时不保存，避免覆盖存档
-      const s = reverseStateRef.current
-      const state = {
-        showReverse: s.showReverse, reverseMode: s.reverseMode, targetGPA: s.targetGPA, targetCardIndex: s.targetCardIndex, targetCardInput: s.targetCardInput,
-        useWES: s.useWES, predictBase: s.predictBase,
-        predictCourses: s.predictCourses, selectedRetakeIds: [...s.selectedRetakeIds],
-        lockedScores: [...s.lockedScores.entries()],
-        retakeReverseTargets: s.retakeReverseTargets,
-        retakeResult: s.retakeResult, predictResult: s.predictResult,
-        reversePanelHeight: s.reversePanelHeight,
-      }
-      writeJSON(workspaceId, 'data/reverse_state.json', state).catch(() => {})
-    }
-  }, [workspaceId])
-
-  // ---- 每次关键状态变化时即时保存（避免刷新丢失） ----
-  useEffect(() => {
-    if (!initialLoadedRef.current) return // 初始加载未完成时不保存，避免用 null 覆盖已保存的状态
-    const s = reverseStateRef.current
-    const state = {
-      showReverse: s.showReverse, reverseMode: s.reverseMode, targetGPA: s.targetGPA, targetCardIndex: s.targetCardIndex, targetCardInput: s.targetCardInput,
-      useWES: s.useWES, predictBase: s.predictBase,
-      predictCourses: s.predictCourses, selectedRetakeIds: [...s.selectedRetakeIds],
-      lockedScores: [...s.lockedScores.entries()],
-      retakeReverseTargets: s.retakeReverseTargets,
-      retakeResult: s.retakeResult, predictResult: s.predictResult,
-      reversePanelHeight: s.reversePanelHeight,
-    }
-    writeJSON(workspaceId, 'data/reverse_state.json', state).catch(() => {})
-  }, [predictCourses, retakeResult, predictResult, targetGPA, targetCardIndex, selectedRetakeIds, lockedScores, workspaceId])
-
-  // beforeunload 确保刷新时也能保存（useEffect cleanup 不可靠）
-  useEffect(() => {
-    let saved = false
-    const handler = () => {
-      if (saved) return
-      saved = true
-      const s = reverseStateRef.current
-      const state = {
-        showReverse: s.showReverse, reverseMode: s.reverseMode, targetGPA: s.targetGPA, targetCardIndex: s.targetCardIndex, targetCardInput: s.targetCardInput,
-        useWES: s.useWES, predictBase: s.predictBase,
-        predictCourses: s.predictCourses, selectedRetakeIds: [...s.selectedRetakeIds],
-        lockedScores: [...s.lockedScores.entries()],
-        retakeReverseTargets: s.retakeReverseTargets,
-        retakeResult: s.retakeResult, predictResult: s.predictResult,
-        reversePanelHeight: s.reversePanelHeight,
-      }
-      writeJSON(workspaceId, 'data/reverse_state.json', state).catch(() => {})
-    }
-    // beforeunload 触发保存（注意：浏览器可能不等待异步完成）
-    window.addEventListener('beforeunload', handler)
-    // visibilitychange 在切 Tab / 最小化时触发（更可靠）
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') handler()
-    })
-    return () => {
-      handler()
-      window.removeEventListener('beforeunload', handler)
-    }
-  }, [workspaceId])
+    if (!loaded) return
+    writeJSON(workspaceId, 'data/reverse_state.json', {
+      version: 2, activeRetake: Boolean(retakeResult), showReverse, reverseMode, targetGPA, targetCardIndex, targetCardInput,
+      useWES, predictBase, predictCourses, selectedRetakeIds: [...selectedRetakeIds],
+      lockedScores: [...lockedScores], retakeResult: retakeBase, predictResult, reversePanelHeight,
+    }).catch(() => {})
+  }, [loaded, workspaceId, showReverse, reverseMode, targetGPA, targetCardIndex, targetCardInput, useWES,
+      predictBase, predictCourses, selectedRetakeIds, lockedScores, retakeBase, retakeResult, predictResult, reversePanelHeight])
 
   // ---- 保存数据（带撤回支持） ----
   const coursesRef = useRef(courses)
@@ -291,15 +238,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     // 同步缓存
     try { sessionStorage.setItem(SCORES_CACHE_KEY, JSON.stringify({ courses: newCourses, activeAlgoId, targetGPA, targetCardIndex })) } catch {}
 
-    // 导入新数据后自动检测算法
-    if (newCourses.length >= 3 && newCourses.some(c => c.gradePoint != null)) {
-      const result = detectAlgorithm(newCourses)
-      if (result && result.algorithmId !== activeAlgoId && result.confidence > 0.5) {
-        setActiveAlgoId(result.algorithmId)
-        await writeJSON(workspaceId, CONFIG_FILE, { activeAlgorithm: result.algorithmId })
-      }
-    }
-  }, [workspaceId, activeAlgoId])
+  }, [workspaceId, activeAlgoId, targetGPA, targetCardIndex])
 
   const handleUndo = useCallback(async () => {
     if (undoIndexRef.current < 0) return
@@ -313,6 +252,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   // ---- 键盘修饰键 + Escape 清空选择 + Ctrl+Z 撤回 ----
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.closest('input,textarea,select,[contenteditable=true]')) return
       shiftKey.current = e.shiftKey
       ctrlKey.current = e.ctrlKey
       metaKey.current = e.metaKey
@@ -340,12 +280,14 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
 
   const saveConfig = useCallback(async (algoId: string) => {
     setActiveAlgoId(algoId)
+    setLockedScores(new Map())
     await writeJSON(workspaceId, CONFIG_FILE, { activeAlgorithm: algoId, customAlgorithms })
   }, [workspaceId, customAlgorithms])
 
-  const saveCustomAlgorithms = useCallback(async (newCustoms: CustomAlgorithm[]) => {
+  const saveCustomAlgorithms = useCallback(async (newCustoms: CustomAlgorithm[], selected: string) => {
+    setActiveAlgoId(selected)
     setCustomAlgorithms(newCustoms)
-    await writeJSON(workspaceId, CONFIG_FILE, { activeAlgorithm: activeAlgoId, customAlgorithms: newCustoms })
+    await writeJSON(workspaceId, CONFIG_FILE, { activeAlgorithm: selected, customAlgorithms: newCustoms })
   }, [workspaceId, activeAlgoId])
 
   // ---- 导出成绩单 ----
@@ -487,8 +429,6 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   }, [workspaceId, renamingArchiveId, renameValue, refreshArchives])
 
   // ---- 当前算法 ----
-  const allAlgorithms = getAllAlgorithms(customAlgorithms)
-  const currentAlgo = allAlgorithms[activeAlgoId] || PRESET_ALGORITHMS.standard_4_0
   const availableGrades = getAvailableGrades(currentAlgo)
 
   // ---- 课程分组 ----
@@ -497,7 +437,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   const allCoursesForPredict = [...realCourses, ...predictedOnly]
 
   const coursesBySemester = new Map<number, ScoreRecord[]>()
-  for (const c of courses) {
+  for (const c of realCourses) {
     const list = coursesBySemester.get(c.semester) || []
     list.push(c)
     coursesBySemester.set(c.semester, list)
@@ -508,42 +448,33 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   }
 
   const semesterStats = getSemesterStats(realCourses, currentAlgo)
+  if (draftSemester != null && !coursesBySemester.has(draftSemester)) {
+    semesterStats.push({ semester: draftSemester, semesterLabel: SEMESTER_LABELS[draftSemester] || '第' + draftSemester + '学期',
+      courseCount: 0, totalCredits: 0, originalAvg: 0, simulatedAvg: 0, originalArithAvg: 0, simulatedArithAvg: 0,
+      originalGPA: 0, simulatedGPA: 0, hasModifications: false, modifiedCount: 0, correctedCount: 0 })
+  }
   const sortedSemesters = [...semesterStats].sort((a, b) => a.semester - b.semester)
 
   // ---- 计算 ----
-  const originalGPA = calculateGPA(realCourses, 'originalScore', currentAlgo)
-  const simulatedGPA = calculateGPA(realCourses, 'simulatedScore', currentAlgo)
-  const predictedGPA = predictedOnly.length > 0 ? calculateGPA(allCoursesForPredict, 'simulatedScore', currentAlgo) : 0
-  const originalAvg = weightedAvg(realCourses, 'originalScore')
-  const simulatedAvg = weightedAvg(realCourses, 'simulatedScore')
-  const predictedAvg = predictedOnly.length > 0 ? weightedAvg(allCoursesForPredict, 'simulatedScore') : 0
-  const originalArithAvg = arithmeticAvg(realCourses, 'originalScore')
-  const simulatedArithAvg = arithmeticAvg(realCourses, 'simulatedScore')
-  const predictedArithAvg = predictedOnly.length > 0 ? arithmeticAvg(allCoursesForPredict, 'simulatedScore') : 0
+  const { gpa: originalGPA, weighted: originalAvg, arithmetic: originalArithAvg } = summarize(realCourses, 'originalScore', currentAlgo)
+  const { gpa: simulatedGPA, weighted: simulatedAvg, arithmetic: simulatedArithAvg } = summarize(realCourses, 'simulatedScore', currentAlgo)
+  const { gpa: predictedGPA, weighted: predictedAvg, arithmetic: predictedArithAvg } = summarize(allCoursesForPredict, 'simulatedScore', currentAlgo)
   const totalCredits = realCourses.reduce((s, c) => s + c.credits, 0)
   const correctedCount = realCourses.filter(c => c.isCorrected).length
-  const modifiedCount = realCourses.filter(c => c.simulatedScore !== null).length
+  const modifiedCount = realCourses.filter(isModified).length
 
   // WES 计算
-  const wesOriginalGPA = calculateWESGPA(realCourses, 'originalScore')
-  const wesSimulatedGPA = calculateWESGPA(realCourses, 'simulatedScore')
-  const wesPredictedGPA = predictedOnly.length > 0 ? calculateWESGPA(allCoursesForPredict, 'simulatedScore') : 0
+  const wesAlgo = PRESET_ALGORITHMS.wes_4_0
+  const wesOriginalGPA = summarize(realCourses, 'originalScore', wesAlgo).gpa
+  const wesSimulatedGPA = summarize(realCourses, 'simulatedScore', wesAlgo).gpa
+  const wesPredictedGPA = summarize(allCoursesForPredict, 'simulatedScore', wesAlgo).gpa
 
   // 输入目标 GPA 时，计算目标绩点对应的最低分数，用于大成绩单颜色标记
   const targetThresholdScore = (() => {
     const tgpa = parseFloat(targetGPA)
-    if (isNaN(tgpa) || courses.length === 0) return null
+    if (!inRange(tgpa, targetAlgo.maxGPA) || targetAlgo.type === 'grade' || courses.length === 0) return null
     const algo = useWES ? PRESET_ALGORITHMS.wes_4_0 : currentAlgo
     return gpaToScore(tgpa, algo)
-  })()
-
-  // ---- 3D 目标卡片计算 ----
-  const targetAlgo = useWES ? PRESET_ALGORITHMS.wes_4_0 : currentAlgo
-  const avgRatio = (() => {
-    if (realCourses.length === 0) return 1
-    const wAvg = weightedAvg(realCourses, 'originalScore')
-    const aAvg = arithmeticAvg(realCourses, 'originalScore')
-    return aAvg > 0 ? wAvg / aAvg : 1
   })()
 
   const TARGET_CARDS = [
@@ -551,15 +482,6 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     { key: 'weighted', label: '目标加权均分' },
     { key: 'arithmetic', label: '目标算术均分' },
   ]
-
-  const getNonSelectedValue = (index: number): string => {
-    const gpa = parseFloat(targetGPA)
-    if (isNaN(gpa)) return '—'
-    const score = gpaToScore(gpa, targetAlgo)
-    if (index === 0) return gpa.toFixed(2)
-    if (index === 1) return score.toFixed(1)
-    return (score / avgRatio).toFixed(1)
-  }
 
   const getCardGradient = (): string => {
     const gpa = parseFloat(targetGPA)
@@ -570,80 +492,27 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     return `linear-gradient(135deg, hsl(${hue}, 75%, 42%), hsl(${Math.min(hue + 15, 135)}, 65%, 32%))`
   }
 
-  // 恢复 targetGPA 后自动填充 targetCardInput
   useEffect(() => {
-    if (targetCardInput !== '') return // 用户正在编辑，不打断
-    const gpa = parseFloat(targetGPA)
-    if (isNaN(gpa)) { setTargetCardInput(''); return }
-    const score = gpaToScore(gpa, targetAlgo)
-    const values = [gpa.toFixed(2), score.toFixed(1), (score / avgRatio).toFixed(1)]
-    setTargetCardInput(values[targetCardIndex])
-  }, [targetGPA, targetCardIndex, targetAlgo, avgRatio])
-
-  // 目标值变化时保存到 target.json（供分析报告读取）
-  useEffect(() => {
-    const gpa = parseFloat(targetGPA)
-    if (isNaN(gpa)) {
-      writeJSON(workspaceId, 'data/target.json', null).catch(() => {})
-      return
-    }
-    const score = gpaToScore(gpa, targetAlgo)
-    writeJSON(workspaceId, 'data/target.json', {
-      targetGPA: gpa.toFixed(2),
-      targetWeightedAvg: score.toFixed(1),
-      targetArithmeticAvg: (score / avgRatio).toFixed(1),
-      algorithm: targetAlgo.id,
-      useWES: useWES,
-    }).catch(() => {})
-  }, [targetGPA, targetAlgo, avgRatio, useWES, workspaceId])
-
-  // targetGPA / targetCardIndex / targetCardInput 变化时实时同步到 sessionStorage
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(SCORES_CACHE_KEY)
-      const cache = raw ? JSON.parse(raw) : {}
-      sessionStorage.setItem(SCORES_CACHE_KEY, JSON.stringify({ ...cache, targetGPA, targetCardIndex, targetCardInput }))
-    } catch {}
-  }, [targetGPA, targetCardIndex, targetCardInput])
+    if (!loaded) return
+    const value = Number(targetCardInput)
+    const valid = targetCardInput.trim() && inRange(value, targetCardIndex === 0 ? targetAlgo.maxGPA : 100)
+    const key = ['targetGPA', 'targetWeightedAvg', 'targetArithmeticAvg'][targetCardIndex]
+    writeJSON(workspaceId, 'data/target.json', valid ? { [key]: value, algorithm: targetAlgo.id, useWES } : null).catch(() => {})
+  }, [loaded, targetCardInput, targetCardIndex, targetAlgo.id, targetAlgo.maxGPA, useWES, workspaceId])
 
   const handleTargetCardChange = (value: string) => {
     setTargetCardInput(value)
-    const num = parseFloat(value)
-    if (isNaN(num) || num <= 0) {
-      setTargetGPA('')
-      setRetakeResult(null)
-      setPredictResult(null)
-      return
-    }
-    let gpa: number
-    if (targetCardIndex === 0) {
-      gpa = num
-    } else if (targetCardIndex === 1) {
-      gpa = scoreToGPA(num, targetAlgo)
-    } else {
-      gpa = scoreToGPA(num * avgRatio, targetAlgo)
-    }
-    setTargetGPA(gpa.toFixed(2))
-    setRetakeResult(null)
-    setPredictResult(null)
+    setTargetGPA(targetCardIndex === 0 ? value : '')
+    setPlanMessage('')
   }
 
-  const switchTargetCard = (newIndex: number) => {
-    if (newIndex === targetCardIndex) return
-    setTargetCardIndex(newIndex)
-    const gpa = parseFloat(targetGPA)
-    if (isNaN(gpa)) {
-      setTargetCardInput('')
-      setRetakeResult(null)
-      setPredictResult(null)
-      return
-    }
-    const score = gpaToScore(gpa, targetAlgo)
-    const values = [gpa.toFixed(2), score.toFixed(1), (score / avgRatio).toFixed(1)]
-    setTargetCardInput(values[newIndex])
-    // 切换卡片时清除旧结果，防止用旧的 targetType 重新计算
-    setRetakeResult(null)
-    setPredictResult(null)
+  const switchTargetCard = (index: number) => {
+    if (index === targetCardIndex) return
+    setTargetCardIndex(index)
+    setTargetCardInput('')
+    setTargetGPA('')
+    setPlanMessage('')
+    setLockedScores(new Map())
   }
 
   // ---- 单元格编辑 ----
@@ -659,7 +528,6 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     const course = courses.find(c => c.id === courseId)
     if (!course) return
 
-    const schoolAlgo = PRESET_ALGORITHMS.five_point
 
     const updated = courses.map(c => {
       if (c.id !== courseId) return c
@@ -674,51 +542,31 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
         if (!trimmed || trimmed === c.courseName) return c
         return { ...c, courseName: trimmed }
       }
-      if (field === 'credits') {
-        const v = parseFloat(value)
-        if (isNaN(v) || v <= 0 || v === c.credits) return c
-        return { ...c, credits: Math.round(v * 10) / 10 }
+      const number = value.trim() === '' ? null : Number(value)
+      if (field === 'credits') return number != null && Number.isFinite(number) && number >= 0 ? { ...c, credits: number } : c
+      if (field === 'originalScore' || field === 'simulatedScore') {
+        if (number != null && !inRange(number)) return c
+        if (number == null && field === 'originalScore' && c.gradePoint == null) return c
+        return { ...c, [field]: number }
       }
-      if (field === 'originalScore') {
-        const v = parseFloat(value)
-        if (isNaN(v) || v < 0 || v > 100) return c
-        if (v === c.originalScore) return c  // 值没变，直接跳过
-        const newGP = parseFloat(scoreToGPA(v, schoolAlgo).toFixed(1))
-        return { ...c, originalScore: v, gradePoint: newGP }
-      }
-      if (field === 'gradePoint') {
-        const v = parseFloat(value)
-        if (isNaN(v) || v < 0 || v > 5.0) return c
-        const rounded = parseFloat(v.toFixed(1))
-        if (rounded === c.gradePoint) return c  // 值没变，直接跳过
-        const newScore = gpaToScore(rounded, schoolAlgo)
-        return { ...c, gradePoint: rounded, originalScore: newScore }
-      }
-      if (field === 'simulatedScore') {
-        if (value.trim() === '') {
-          if (c.simulatedScore === null) return c
-          return { ...c, simulatedScore: null, simulatedGP: null }
+      if (field === 'gradePoint' || field === 'simulatedGP') {
+        if (number != null && !inRange(number, currentAlgo.maxGPA)) return c
+        if (currentAlgo.type === 'grade') return { ...c, [field]: number }
+        // The displayed GP is derived from the percentage under the selected scale.
+        const scoreField = field === 'gradePoint' ? 'originalScore' : 'simulatedScore'
+        if (number == null) return scoreField === 'simulatedScore' ? { ...c, simulatedScore: null } : c
+        const existing = courseGPA(c, scoreField, currentAlgo)
+        if (existing != null && displayMetric(existing) === displayMetric(number)) return c
+        const score = gpaToScore(number, currentAlgo)
+        if (!inRange(score) || Math.abs(scoreToGPA(score, currentAlgo) - number) > .001) {
+          setPlanMessage('该绩点在当前换算规则中没有对应分数，请直接编辑百分制成绩。')
+          return c
         }
-        const v = parseFloat(value)
-        if (isNaN(v) || v < 0 || v > 100) return c
-        if (v === c.simulatedScore) return c
-        const simGP = parseFloat(scoreToGPA(v, schoolAlgo).toFixed(1))
-        return { ...c, simulatedScore: v, simulatedGP: simGP }
-      }
-      if (field === 'simulatedGP') {
-        if (value.trim() === '') {
-          if (c.simulatedGP === null) return c
-          return { ...c, simulatedScore: null, simulatedGP: null }
-        }
-        const v = parseFloat(value)
-        if (isNaN(v) || v < 0 || v > 5.0) return c
-        const rounded = parseFloat(v.toFixed(1))
-        if (rounded === c.simulatedGP) return c
-        const simScore = gpaToScore(rounded, schoolAlgo)
-        return { ...c, simulatedGP: rounded, simulatedScore: simScore }
+        return { ...c, [scoreField]: score }
       }
       return c
     })
+    if (updated.every((c, i) => c === courses[i])) return
     await saveCourses(updated)
   }
 
@@ -733,15 +581,19 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   // ---- 添加课程 ----
   const startAddCourse = (semester: number) => {
     setAddingSemester(semester)
-    setNewCourse({ courseName: '', credits: '', score: '', category: '专业必修' })
+    setNewCourse({ courseName: '', credits: '', score: '', gp: '', category: '专业必修' })
   }
 
   const confirmAddCourse = async () => {
-    if (!newCourse.courseName.trim() || !newCourse.credits || !newCourse.score || addingSemester === null) return
-
-    const credits = parseFloat(newCourse.credits)
-    const score = parseFloat(newCourse.score)
-    if (isNaN(credits) || isNaN(score)) return
+    const credits = Number(newCourse.credits)
+    const score = newCourse.score.trim() ? Number(newCourse.score) : null
+    const gp = newCourse.gp.trim() ? Number(newCourse.gp) : null
+    if (addingSemester == null || !newCourse.courseName.trim() || !newCourse.credits.trim() || !Number.isFinite(credits) || credits < 0 ||
+        (score == null && gp == null) || (score != null && !inRange(score)) || (gp != null && !inRange(gp, currentAlgo.maxGPA))) {
+      setPlanMessage('请填写课程名、有效学分，以及分数或绩点。')
+      return
+    }
+    setPlanMessage('')
 
     const maxOrder = (coursesBySemester.get(addingSemester) || []).reduce((max, c) => Math.max(max, c.order), 0)
 
@@ -749,7 +601,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
       id: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       courseName: newCourse.courseName.trim(),
       credits,
-      originalScore: score,
+      originalScore: score, gradePoint: gp,
       simulatedScore: null,
       semester: addingSemester,
       category: newCourse.category,
@@ -759,28 +611,31 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     }
 
     setAddingSemester(null)
+    setDraftSemester(null)
     await saveCourses([...courses, newRecord])
   }
 
   const cancelAddCourse = () => {
+    setDraftSemester(null)
     setAddingSemester(null)
   }
 
   // ---- 添加预测课程 ----
   const confirmAddPredictCourse = () => {
-    if (!predictNewName || !predictNewCredits) return
-    const CATEGORY_MAP: Record<string, string> = {
-      '专必': '专业必修', '公必': '通识数理', '公选': '其他', '专选': '专业选修', '其他': '其他'
+    const score = predictNewScore.trim() ? Number(predictNewScore) : null
+    const gp = targetAlgo.type === 'grade' && predictNewGP.trim() ? Number(predictNewGP) : null
+    const credits = Number(predictNewCredits)
+    if (!predictNewName.trim() || !predictNewCredits.trim() || !Number.isFinite(credits) || credits < 0 ||
+        (score != null && !inRange(score)) || (gp != null && !inRange(gp, targetAlgo.maxGPA))) {
+      setPlanMessage('请核对课程名、学分和成绩范围。')
+      return
     }
-    const score = predictNewScore ? parseFloat(predictNewScore) : null
-    const gp = predictNewGP ? parseFloat(predictNewGP) : null
-    const credits = Math.round(parseFloat(predictNewCredits) * 10) / 10
-    if (isNaN(credits) || credits <= 0) return
+    setPlanMessage('')
     setPredictCourses(prev => [...prev, {
-      id: `predict_${Date.now()}`,
-      courseName: predictNewName,
+      id: crypto.randomUUID(),
+      courseName: predictNewName.trim(),
       credits,
-      category: (CATEGORY_MAP[predictNewCategory] || '其他') as CourseCategory,
+      category: predictNewCategory as CourseCategory,
       lockedScore: score,
       lockedGP: gp,
     }])
@@ -792,6 +647,17 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     setAddingPredict(false)
   }
 
+  const editFutureValue = (input: HTMLInputElement, course: FutureCourse, field: 'lockedScore' | 'lockedGP') => {
+    const value = input.value.trim() ? Number(input.value) : null
+    const max = field === 'lockedGP' ? targetAlgo.maxGPA : 100
+    if (value != null && !inRange(value, max)) {
+      input.value = String(course[field] ?? '')
+      setPlanMessage('请输入 0 到 ' + max + ' 之间的数值。')
+      return
+    }
+    if (value !== course[field]) setPredictCourses(rows => rows.map(c => c.id === course.id ? {...c, [field]: value} : c))
+  }
+
   const cancelAddPredictCourse = () => {
     setAddingPredict(false)
     setPredictNewName('')
@@ -801,24 +667,10 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   }
 
   // ---- 添加新学期 ----
-  const addNewSemester = async () => {
-    const maxSem = courses.length > 0 ? Math.max(...courses.map(c => c.semester)) : 0
-    const newSem = maxSem + 1
-    // 创建一个空的占位课程，让用户知道新学期已创建
-    const placeholder: ScoreRecord = {
-      id: `sem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      courseName: '（示例课程，可编辑或删除）',
-      credits: 0,
-      originalScore: 0,
-      simulatedScore: null,
-      simulatedGP: null,
-      semester: newSem,
-      category: '其他',
-      source: 'manual',
-      isCorrected: false,
-      order: 0,
-    }
-    await saveCourses([...courses, placeholder])
+  const addNewSemester = () => {
+    const next = Math.max(0, ...realCourses.map(c => c.semester)) + 1
+    setDraftSemester(next)
+    startAddCourse(next)
   }
 
   // ---- 编辑学期标题 ----
@@ -1005,6 +857,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
   const openReversePanel = (mode: 'retake' | 'predict') => {
     setShowReverse(true)
     setReverseMode(mode)
+    setPlanMessage('')
     // 如果当前高度太小（用户拖到底关闭了），恢复到默认 120px
     if (reversePanelHeight < 200) setReversePanelHeight(200)
   }
@@ -1028,126 +881,34 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     document.addEventListener('mouseup', onUp)
   }, [reversePanelHeight])
 
+  const baseCourses = forecastBase(courses, predictBase, retakeBase)
+  const baseSummary = summarize(baseCourses, 'simulatedScore', targetAlgo)
   const runReverse = () => {
-    const tgpa = parseFloat(targetGPA)
-    const hasTarget = !isNaN(tgpa)
-    // 反推模式必须设置目标
-    if (reverseMode === 'retake' && !hasTarget) return
-
-    const algo = useWES ? PRESET_ALGORITHMS.wes_4_0 : currentAlgo
-    // 根据选中的目标卡片确定反推目标类型
-    const targetType = targetCardIndex === 0 ? 'gpa' as const : targetCardIndex === 1 ? 'weighted' as const : 'arithmetic' as const
-    // 使用原始输入值（避免 GPA↔分数 转换精度损失）
-    const rawTarget = parseFloat(targetCardInput)
-    if (isNaN(rawTarget)) return
-
+    const type = targetCardIndex === 0 ? 'gpa' : targetCardIndex === 1 ? 'weighted' : 'arithmetic'
+    const target = targetCardInput.trim() ? Number(targetCardInput) : null
+    const max = type === 'gpa' ? targetAlgo.maxGPA : 100
+    setPlanMessage('')
+    if (target != null && !inRange(target, max)) return setPlanMessage('目标值须在 0 到 ' + max + ' 之间。')
     if (reverseMode === 'retake') {
-      const realSelectable = realCourses.filter(c => selectedRetakeIds.has(c.id))
-      const realFixed = realCourses.filter(c => !selectedRetakeIds.has(c.id))
-      // 预测课程作为固定基准参与计算（不可重修）
-      const fixed = [...realFixed, ...predictedOnly]
-      const result = calculateReverseTargets(realSelectable, fixed, rawTarget, algo, lockedScores, targetType)
-      setRetakeResult({ ...result, targetGPA: rawTarget })
-      // 保存反推目标供预测模式使用
-      setRetakeReverseTargets(result.targets)
-    } else {
-      // 预测模式：根据 predictBase 选择已有课程的成绩基准
-      let baseCourses = courses
-      if (predictBase === 'simulated') {
-        baseCourses = courses.map(c => ({
-          ...c,
-          originalScore: c.simulatedScore ?? c.originalScore,
-        }))
-      } else if (predictBase === 'reverse' && retakeReverseTargets) {
-        // 使用已保存的反推目标成绩
-        baseCourses = courses.map(c => {
-          const target = retakeReverseTargets.find(t => t.courseId === c.id)
-          if (target) {
-            const score = target.locked ? (target.lockedValue ?? target.suggestedScore) : target.suggestedScore
-            return { ...c, originalScore: score }
-          }
-          return c
-        })
-      }
-      // predictBase === 'original' 直接用原始成绩
-
-      const predictAsRecords: ScoreRecord[] = predictCourses.map(pc => ({
-        id: pc.id,
-        courseName: pc.courseName,
-        credits: pc.credits,
-        originalScore: pc.lockedScore ?? 0,
-        simulatedScore: pc.lockedScore,
-        semester: Math.max(...courses.map(c => c.semester), 0) + 1,
-        category: pc.category,
-        source: 'manual' as const,
-        isCorrected: false,
-        order: 0,
-      }))
-
-      if (hasTarget) {
-        // 有目标：反推预测课程需要的成绩
-        const result = calculateReverseTargets(predictAsRecords, baseCourses, rawTarget, algo, lockedScores, targetType)
-        setPredictResult({ ...result, targetGPA: rawTarget })
-      } else {
-        // 无目标 GPA：直接计算现有+预测课程的合并 GPA
-        const allRecords = [...baseCourses, ...predictAsRecords]
-        const futureGPA = calculateGPA(allRecords, 'originalScore', algo)
-        const futureAvg = weightedAvg(allRecords, 'originalScore')
-        const futureCredits = allRecords.reduce((s, c) => s + c.credits, 0)
-        const futureArithAvg = allRecords.length > 0 ? allRecords.reduce((s, c) => s + c.originalScore, 0) / allRecords.length : 0
-
-        // 构建 targets：展示预测课程信息 + 建议成绩（边界增益）
-        const currentBaseGPA = calculateGPA(baseCourses, 'originalScore', algo)
-        const targets: ReverseTarget[] = predictAsRecords.map(pc => {
-          const boundary = findNextBoundary(pc.originalScore, algo)
-          const suggestedScore = boundary ? boundary.min : pc.originalScore
-          const pcGPA = scoreToGPA(pc.originalScore, algo)
-          return {
-            courseId: pc.id,
-            courseName: pc.courseName,
-            credits: pc.credits,
-            currentScore: pc.originalScore,
-            suggestedScore,
-            locked: false,
-            lockedValue: null,
-            gpaContribution: pcGPA * pc.credits / Math.max(futureCredits, 1),
-            difficultyStars: 0,
-            boundaryGain: boundary != null && boundary.min > pc.originalScore,
-            overflow: false,
-          }
-        })
-
-        setPredictResult({
-          mode: 'predict',
-          targetGPA: futureGPA,
-          currentGPA: currentBaseGPA,
-          gap: futureGPA - currentBaseGPA,
-          targetType: 'gpa',
-          targets,
-          achievable: true,
-          estimatedGPA: futureGPA,
-          estimatedWeightedAvg: Math.round(futureAvg * 10) / 10,
-          estimatedArithAvg: Math.round(futureArithAvg * 10) / 10,
-          warningMessage: null,
-        })
-      }
+      if (target == null) return setPlanMessage('请先填写目标值。')
+      const result = calculateReverseTargets(realCourses.filter(c => selectedRetakeIds.has(c.id)),
+        realCourses.filter(c => !selectedRetakeIds.has(c.id)), target, targetAlgo, lockedScores, type)
+      setRetakeResult({ ...result, hasTarget: true, basis: sourceKey, selection: selections, inputs: retakeKey })
+      return
+    }
+    if (predictBase === 'reverse' && !retakeBase?.achievable) return setPlanMessage('请先计算重修方案，或选择原始、模拟成绩作为基准。')
+    try {
+      const result = forecast(baseCourses, futureRecords(predictCourses, courses), targetAlgo, target, type)
+      setPredictResult({ ...result, basis: sourceKey, inputs: predictKey })
+    } catch (err) {
+      setPredictResult(null)
+      setPlanMessage(err instanceof Error ? err.message : '请核对预测课程。')
     }
   }
 
   const applyReverseTargets = async () => {
-    if (!retakeResult) return
-
-    if (reverseMode === 'retake') {
-      const updated = courses.map(c => {
-        const target = retakeResult.targets.find(t => t.courseId === c.id)
-        if (target) {
-          const score = target.locked ? target.lockedValue : target.suggestedScore
-          return { ...c, simulatedScore: score }
-        }
-        return c
-      })
-      await saveCourses(updated)
-    }
+    if (!retakeResult?.achievable) return
+    await saveCourses(applyProposal(courses, retakeResult))
     setShowReverse(false)
   }
 
@@ -1170,8 +931,8 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
     if (key === lockedKeyRef.current) return
     lockedKeyRef.current = key
     // 仅在已有结果时自动重算
-    if ((reverseMode === 'retake' && retakeResult) || (reverseMode === 'predict' && predictResult)) {
-      if (selectedRetakeIds.size > 0 || (reverseMode === 'predict' && predictCourses.length > 0)) {
+    if (reverseMode === 'retake' && retakeBase && loaded) {
+      if (selectedRetakeIds.size > 0) {
         runReverse()
       }
     }
@@ -1191,7 +952,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
         <label className="text-sm text-muted-foreground">算法:</label>
         <select
           className="rounded border px-2 py-1 text-sm"
-          value={activeAlgoId}
+          aria-label="GPA 算法" title={currentAlgo.description} value={activeAlgoId}
           onChange={e => saveConfig(e.target.value)}
         >
           <optgroup label="预设算法">
@@ -1207,6 +968,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
             </optgroup>
           )}
         </select>
+        <details className="text-xs text-muted-foreground"><summary>计算规则</summary><p>{currentAlgo.description}</p></details>
         <button
           className={`rounded border px-2 py-1 text-xs hover:bg-accent ${showCustomAlgoEditor ? 'bg-blue-100 border-blue-400' : ''}`}
           onClick={() => { setShowCustomAlgoEditor(!showCustomAlgoEditor); setEditingCustomAlgo(null) }}
@@ -1470,8 +1232,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   <button className="text-blue-600 hover:underline" onClick={() => saveConfig(ca.id)}>使用</button>
                   <button className="text-red-500 hover:underline" onClick={() => {
                     const updated = customAlgorithms.filter(c => c.id !== ca.id)
-                    saveCustomAlgorithms(updated)
-                    if (activeAlgoId === ca.id) saveConfig('standard_4_0')
+                    saveCustomAlgorithms(updated, activeAlgoId === ca.id ? 'standard_4_0' : activeAlgoId)
                   }}>删除</button>
                 </div>
               ))}
@@ -1521,11 +1282,11 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                         setNewAlgoMappings(prev => prev.map((p, i) => i === idx ? { ...p, grade: e.target.value } : p))
                       }} />
                     <input className="w-14 rounded border px-1 py-0.5 text-xs text-center"
-                      value={m.min} onChange={e => {
+                      disabled={newAlgoType === 'grade'} value={newAlgoType === 'grade' ? m.gpa : m.min} onChange={e => {
                         setNewAlgoMappings(prev => prev.map((p, i) => i === idx ? { ...p, min: e.target.value } : p))
                       }} />
                     <input className="w-14 rounded border px-1 py-0.5 text-xs text-center"
-                      value={m.max} onChange={e => {
+                      disabled={newAlgoType === 'grade'} value={newAlgoType === 'grade' ? m.gpa : m.max} onChange={e => {
                         setNewAlgoMappings(prev => prev.map((p, i) => i === idx ? { ...p, max: e.target.value } : p))
                       }} />
                     <input className="w-14 rounded border px-1 py-0.5 text-xs text-center"
@@ -1557,17 +1318,19 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
               )}
               <button className="bg-primary text-primary-foreground px-3 py-1 rounded text-xs font-medium border-none cursor-pointer hover:bg-primary/90"
                 onClick={() => {
-                  if (!newAlgoName.trim() || newAlgoMappings.length === 0) return
-                  const parsed = newAlgoMappings
-                    .filter(m => m.grade.trim() && m.gpa.trim())
-                    .map(m => ({ grade: m.grade.trim(), min: Number(m.min) || 0, max: Number(m.max) || 0, gpa: Number(m.gpa) || 0 }))
-                  if (parsed.length === 0) return
+                  if (!newAlgoName.trim()) return setRuleError('请填写算法名称。')
+                  const asNumber = (v: string) => v.trim() ? Number(v) : NaN
+                  const parsed = newAlgoMappings.map(m => ({ grade: m.grade.trim(), gpa: asNumber(m.gpa),
+                    min: asNumber(newAlgoType === 'grade' ? m.gpa : m.min), max: asNumber(newAlgoType === 'grade' ? m.gpa : m.max) }))
+                  const error = validateMappings(newAlgoType, asNumber(newAlgoMaxGPA), parsed)
+                  if (error) return setRuleError(error)
+                  setRuleError('')
                   const algo: CustomAlgorithm = {
                     id: editingCustomAlgo?.id || `custom_${Date.now()}`,
                     name: newAlgoName.trim(),
                     description: `自定义${newAlgoType === 'grade' ? '等级制' : '分段制'}算法`,
-                    maxGPA: parseFloat(newAlgoMaxGPA) || 4.0,
-                    precision: newAlgoType === 'grade' ? 2 : 1,
+                    maxGPA: Number(newAlgoMaxGPA),
+                    precision: 2,
                     type: newAlgoType,
                     mappings: parsed,
                   }
@@ -1578,8 +1341,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   } else {
                     updated = [...customAlgorithms, algo]
                   }
-                  saveCustomAlgorithms(updated)
-                  saveConfig(algo.id)
+                  saveCustomAlgorithms(updated, algo.id)
                   setEditingCustomAlgo(null)
                   setNewAlgoName('')
                   setNewAlgoMappings([
@@ -1591,6 +1353,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   ])
                 }}
               >💾 {editingCustomAlgo ? '保存修改' : '创建并使用'}</button>
+              {ruleError && <span role="alert" className="text-red-600 text-xs">{ruleError}</span>}
             </div>
           </div>
         </div>
@@ -1607,6 +1370,8 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
         ) : (
           sortedSemesters.map(stat => {
             const semCourses = coursesBySemester.get(stat.semester) || []
+            const termBefore = summarize(semCourses, 'originalScore', currentAlgo)
+            const termAfter = summarize(semCourses, 'simulatedScore', currentAlgo)
             const isCollapsed = collapsedSemesters.has(stat.semester)
             const isCrossSemDrag = dragState.targetSemester === stat.semester && dragState.sourceSemester !== null && dragState.sourceSemester !== stat.semester
             const semSelectedCount = semCourses.filter(c => selectedCourseIds.has(c.id)).length
@@ -1664,21 +1429,21 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                     </>
                   )}
                   <span className="text-xs text-muted-foreground">
-                    均分 {stat.originalAvg}
-                    {stat.simulatedAvg !== stat.originalAvg && (
-                      <span className="text-blue-600 ml-0.5">→{stat.simulatedAvg}</span>
+                    均分 {displayMetric(termBefore.weighted)}
+                    {termAfter.weighted !== termBefore.weighted && (
+                      <span className="text-blue-600 ml-0.5">→{displayMetric(termAfter.weighted)}</span>
                     )}
                   </span>
                   <span className="text-xs text-muted-foreground ml-2">
-                    算术 {stat.originalArithAvg.toFixed(1)}
-                    {stat.simulatedArithAvg !== stat.originalArithAvg && (
-                      <span className="text-blue-600 ml-0.5">→{stat.simulatedArithAvg.toFixed(1)}</span>
+                    算术 {displayMetric(termBefore.arithmetic)}
+                    {termAfter.arithmetic !== termBefore.arithmetic && (
+                      <span className="text-blue-600 ml-0.5">→{displayMetric(termAfter.arithmetic)}</span>
                     )}
                   </span>
                   <span className="text-xs text-muted-foreground ml-2">
-                    GPA {stat.originalGPA}
-                    {stat.simulatedGPA !== stat.originalGPA && (
-                      <span className="text-blue-600 ml-0.5">→{stat.simulatedGPA}</span>
+                    GPA {displayMetric(termBefore.gpa)}
+                    {termAfter.gpa !== termBefore.gpa && (
+                      <span className="text-blue-600 ml-0.5">→{displayMetric(termAfter.gpa)}</span>
                     )}
                   </span>
                   <span className="text-xs text-muted-foreground">({stat.courseCount}门)</span>
@@ -1806,7 +1571,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                             <td className="py-1.5 text-center">
                               <select className="rounded border px-1 py-0.5 text-xs w-14" value={newCourse.category}
                                 onChange={e => setNewCourse(n => ({ ...n, category: e.target.value }))}>
-                                {['专必','公必','公选','专选','其他'].map(c => <option key={c} value={c}>{c}</option>)}
+                                {COURSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                               </select>
                             </td>
                             <td className="py-1.5 text-center">
@@ -1821,8 +1586,9 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                                 onChange={e => setNewCourse(n => ({ ...n, score: e.target.value }))}
                                 onKeyDown={e => e.key === 'Enter' && e.ctrlKey && confirmAddCourse()} />
                             </td>
-                            <td className="py-1.5 text-center text-xs text-muted-foreground">—</td>
-                            <td className="py-1.5 text-center"></td>
+                            <td className="py-1.5 text-center text-xs text-muted-foreground">{currentAlgo.type === 'grade' ?
+                                <input className="w-14 rounded border" aria-label="原始绩点" value={newCourse.gp}
+                                  onChange={e => setNewCourse(n => ({...n, gp: e.target.value}))} /> : '—'}</td>
                             <td className="py-1.5 text-center">
                               <button className="text-green-600 hover:text-green-700 text-xs" onClick={confirmAddCourse}>✓</button>
                               <button className="text-red-500 hover:text-red-600 text-xs ml-1" onClick={cancelAddCourse}>✕</button>
@@ -1878,7 +1644,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                 <tbody>
                   {predictedOnly.map(c => {
                     const hasSim = c.simulatedScore !== null
-                    const simGP = c.simulatedGP != null ? c.simulatedGP.toFixed(1) : hasSim ? scoreToGPA(c.simulatedScore!, currentAlgo).toFixed(1) : null
+                    const simGP = courseGPA(c, 'simulatedScore', currentAlgo)?.toFixed(2) ?? null
                     const targetScore = parseFloat(targetGPA)
                     const targetThreshold = !isNaN(targetScore) ? gpaToScore(targetScore, useWES ? PRESET_ALGORITHMS.wes_4_0 : currentAlgo) : null
                     const simColor = (hasSim && targetThreshold != null)
@@ -1925,7 +1691,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                         </td>
                       ) : (
                         <td className="py-1 text-center text-muted-foreground text-xs cursor-text hover:bg-blue-50/50 rounded transition-colors"
-                          title="双击编辑" onDoubleClick={() => startCellEdit(c.id, 'credits', c.credits.toFixed(1))}>{c.credits.toFixed(1)}</td>
+                          title="双击编辑" onDoubleClick={() => startCellEdit(c.id, 'credits', String(c.credits))}>{String(c.credits)}</td>
                       )}
 
                       {/* 成绩 / 模拟（预测课程无原始成绩，仅模拟成绩可编辑） */}
@@ -2003,34 +1769,34 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
         <div className="flex items-start gap-4">
           {/* 对比卡片 */}
           <div className="flex gap-3 flex-1 items-center">
-            <StatCard label="原始 GPA" value={originalGPA.toFixed(2)} />
-            <StatCard label="模拟 GPA" value={modifiedCount > 0 ? simulatedGPA.toFixed(2) : '—'}
+            <StatCard label="原始 GPA" value={displayMetric(originalGPA)} />
+            <StatCard label="模拟 GPA" value={modifiedCount > 0 ? displayMetric(simulatedGPA) : '—'}
               highlight={modifiedCount > 0 && simulatedGPA !== originalGPA}
-              diff={modifiedCount > 0 ? simulatedGPA - originalGPA : undefined}
+              diff={modifiedCount > 0 && simulatedGPA != null && originalGPA != null ? simulatedGPA - originalGPA : undefined}
             />
-            <StatCard label="原始均分" value={originalAvg.toFixed(1)} subtitle={`算术 ${originalArithAvg.toFixed(1)}`} />
-            <StatCard label="模拟均分" value={modifiedCount > 0 ? simulatedAvg.toFixed(1) : '—'}
+            <StatCard label="原始均分" value={displayMetric(originalAvg)} subtitle={`算术 ${displayMetric(originalArithAvg)}`} />
+            <StatCard label="模拟均分" value={modifiedCount > 0 ? displayMetric(simulatedAvg) : '—'}
               highlight={modifiedCount > 0 && simulatedAvg !== originalAvg}
-              diff={modifiedCount > 0 ? simulatedAvg - originalAvg : undefined}
-              subtitle={modifiedCount > 0 ? `算术 ${simulatedArithAvg.toFixed(1)}` : undefined}
+              diff={modifiedCount > 0 && simulatedAvg != null && originalAvg != null ? simulatedAvg - originalAvg : undefined}
+              subtitle={modifiedCount > 0 ? `算术 ${displayMetric(simulatedArithAvg)}` : undefined}
             />
             {predictedOnly.length > 0 && (
               <>
                 <div className="w-px h-10 bg-border/50 mx-1" />
-                <StatCard label="预测 GPA" value={predictedGPA > 0 ? predictedGPA.toFixed(2) : '—'} highlight={true} />
-                <StatCard label="预测均分" value={predictedAvg > 0 ? predictedAvg.toFixed(1) : '—'} highlight={true}
-                  subtitle={predictedAvg > 0 ? `算术 ${predictedArithAvg.toFixed(1)}` : undefined} />
+                <StatCard label="预测 GPA" value={predictedGPA != null ? displayMetric(predictedGPA) : '—'} highlight={true} />
+                <StatCard label="预测均分" value={predictedAvg != null ? displayMetric(predictedAvg) : '—'} highlight={true}
+                  subtitle={predictedAvg != null ? `算术 ${displayMetric(predictedArithAvg)}` : undefined} />
               </>
             )}
             {useWES && (
               <>
-                <StatCard label="WES 原始" value={wesOriginalGPA.toFixed(2)} />
-                <StatCard label="WES 模拟" value={modifiedCount > 0 ? wesSimulatedGPA.toFixed(2) : '—'}
+                <StatCard label="WES 原始" value={displayMetric(wesOriginalGPA)} />
+                <StatCard label="WES 模拟" value={modifiedCount > 0 ? displayMetric(wesSimulatedGPA) : '—'}
                   highlight={modifiedCount > 0 && wesSimulatedGPA !== wesOriginalGPA}
-                  diff={modifiedCount > 0 ? wesSimulatedGPA - wesOriginalGPA : undefined}
+                  diff={modifiedCount > 0 && wesSimulatedGPA != null && wesOriginalGPA != null ? wesSimulatedGPA - wesOriginalGPA : undefined}
                 />
                 {predictedOnly.length > 0 && (
-                  <StatCard label="WES 预测" value={wesPredictedGPA > 0 ? wesPredictedGPA.toFixed(2) : '—'} highlight={true} />
+                  <StatCard label="WES 预测" value={wesPredictedGPA != null ? displayMetric(wesPredictedGPA) : '—'} highlight={true} />
                 )}
               </>
             )}
@@ -2085,20 +1851,20 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                           onClick={e => e.stopPropagation()}
                         />
                       ) : (
-                        <span style={{ fontSize: 18, fontWeight: 600, color: '#000' }}>{getNonSelectedValue(i)}</span>
+                        <span style={{ fontSize: 18, fontWeight: 600, color: '#000' }}>—</span>
                       )}
                     </div>
                   )
                 })}
               </div>)}
               <label className="flex items-center gap-1 px-2 py-1 border border-border rounded cursor-pointer text-xs whitespace-nowrap">
-                <input type="checkbox" checked={useWES} onChange={e => { setUseWES(e.target.checked); setRetakeResult(null); setPredictResult(null) }} />
+                <input type="checkbox" checked={useWES} onChange={e => { setUseWES(e.target.checked); setRetakeResult(null); setPredictResult(null); setLockedScores(new Map()) }} />
                 <span className="font-medium">WES</span>
               </label>
             </div>
           </div>
           <div className="text-xs text-muted-foreground text-right whitespace-nowrap">
-            <div>总课程: {courses.length}门</div>
+            <div>实修课程: {realCourses.length}门</div>
             <div>总学分: {totalCredits}</div>
             <div>已修正: {correctedCount}门</div>
             <div>模拟中: {modifiedCount}门</div>
@@ -2120,6 +1886,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
         </div>
       </div>
 
+      {planMessage && <p role="status" className="px-4 py-2 text-sm">{planMessage}</p>}
       {/* === 反推面板 === */}
       {showReverse && (
           <div ref={reversePanelRef} className="planning-panel border border-t-0 rounded-b-md bg-background" style={IS_BROWSER_MODE ? { height: 'auto', overflow: 'visible' } : { height: reversePanelHeight, overflow: 'auto' }}>
@@ -2165,7 +1932,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   {(() => {
                     const filtered = realCourses.filter(c => !retakeSearch || c.courseName.includes(retakeSearch))
                     const sorted = retakeSort === 'lowScore'
-                      ? [...filtered].sort((a, b) => a.originalScore - b.originalScore)
+                      ? [...filtered].sort((a, b) => (a.originalScore ?? Infinity) - (b.originalScore ?? Infinity))
                       : filtered
                     return sorted.map(c => (
                     <label key={c.id} className="flex items-center gap-2 py-0.5 hover:bg-accent/30 rounded px-1">
@@ -2183,8 +1950,8 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                       />
                       <span>{c.courseName}</span>
                       <span className="text-xs text-muted-foreground">{c.credits}学分</span>
-                      <span className="text-xs">{c.originalScore}分</span>
-                      <span className="text-xs text-muted-foreground">({scoreToGrade(c.originalScore, currentAlgo)})</span>
+                      <span className="text-xs">{c.originalScore == null ? '—' : c.originalScore + '分'}</span>
+                      <span className="text-xs text-muted-foreground">({c.originalScore == null ? '—' : scoreToGrade(c.originalScore, currentAlgo)})</span>
                     </label>
                   ))})()}
                 </div>
@@ -2211,7 +1978,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                       onClick={() => { setPredictBase('simulated'); setPredictResult(null) }}
                       title="以编辑后的模拟成绩为基准预测未来">✏️ 模拟成绩</button>
                     <button className={`px-2 py-1 border-l ${predictBase === 'reverse' ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground'}`}
-                      onClick={() => { setPredictBase('reverse'); setPredictResult(null) }}
+                      disabled={!retakeBase?.achievable} onClick={() => { setPredictBase('reverse'); setPredictResult(null) }}
                       title="以反推/模拟后的成绩为基准预测未来">🎯 反推后成绩</button>
                   </div>
                   <span className="text-[10px] text-muted-foreground">
@@ -2238,32 +2005,17 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                         <tr key={pc.id} className="border-t border-muted hover:bg-accent/30">
                           <td className="py-1 pl-2">{pc.courseName}</td>
                           <td className="py-1 text-center text-muted-foreground">{pc.category}</td>
-                          <td className="py-1 text-center text-muted-foreground">{pc.credits.toFixed(1)}</td>
+                          <td className="py-1 text-center text-muted-foreground">{String(pc.credits)}</td>
                           <td className="py-1 text-center">
                             <input className="w-14 rounded border px-1 py-0.5 text-xs text-center"
-                              placeholder="85" value={pc.lockedScore ?? ''}
-                              onChange={e => {
-                                const val = e.target.value
-                                setPredictCourses(prev => prev.map(p => {
-                                  if (p.id !== pc.id) return p
-                                  const score = val === '' ? null : parseFloat(val)
-                                  const gp = score != null && !isNaN(score) ? parseFloat(scoreToGPA(score, PRESET_ALGORITHMS.five_point).toFixed(1)) : null
-                                  return { ...p, lockedScore: score, lockedGP: gp }
-                                }))
-                              }} />
+                              aria-label={pc.courseName + '预期分数'} placeholder="85" inputMode="decimal" defaultValue={pc.lockedScore ?? ''}
+                              onBlur={e => editFutureValue(e.currentTarget, pc, 'lockedScore')} />
                           </td>
                           <td className="py-1 text-center">
-                            <input className="w-14 rounded border px-1 py-0.5 text-xs text-center"
-                              placeholder="3.5" value={pc.lockedGP ?? ''}
-                              onChange={e => {
-                                const val = e.target.value
-                                setPredictCourses(prev => prev.map(p => {
-                                  if (p.id !== pc.id) return p
-                                  const gp = val === '' ? null : parseFloat(val)
-                                  const score = gp != null && !isNaN(gp) ? gpaToScore(gp, PRESET_ALGORITHMS.five_point) : null
-                                  return { ...p, lockedGP: gp, lockedScore: score }
-                                }))
-                              }} />
+                            {targetAlgo.type === 'grade' ? <input className="w-14 rounded border px-1 py-0.5 text-xs text-center"
+                              aria-label={pc.courseName + '预期绩点'} placeholder="3.5" inputMode="decimal" defaultValue={pc.lockedGP ?? ''}
+                              onBlur={e => editFutureValue(e.currentTarget, pc, 'lockedGP')} /> :
+                              pc.lockedScore == null ? '—' : displayMetric(scoreToGPA(pc.lockedScore, targetAlgo))}
                           </td>
                           <td className="py-1 text-center">
                             <button className="text-red-400 hover:text-red-600 text-xs"
@@ -2295,16 +2047,12 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                           <td className="py-1.5 text-center">
                             <input className="w-14 rounded border px-1 py-0.5 text-xs text-center" placeholder="成绩"
                               value={predictNewScore}
-                              onChange={e => {
-                                const v = e.target.value
-                                setPredictNewScore(v)
-                                const n = parseFloat(v)
-                                if (!isNaN(n)) setPredictNewGP(scoreToGPA(n, PRESET_ALGORITHMS.five_point).toFixed(1))
-                                else if (v === '') setPredictNewGP('')
-                              }}
+                              onChange={e => setPredictNewScore(e.target.value)}
                               onKeyDown={e => e.key === 'Enter' && e.ctrlKey && confirmAddPredictCourse()} />
                           </td>
-                          <td className="py-1.5 text-center text-xs text-muted-foreground">{predictNewGP || '—'}</td>
+                          <td className="py-1.5 text-center text-xs text-muted-foreground">{targetAlgo.type === 'grade'
+                              ? <input aria-label="预期绩点" className="w-14 rounded border" value={predictNewGP} onChange={e => setPredictNewGP(e.target.value)} />
+                              : predictNewScore.trim() && inRange(Number(predictNewScore)) ? displayMetric(scoreToGPA(Number(predictNewScore), targetAlgo)) : '—'}</td>
                           <td className="py-1.5 text-center">
                             <button className="text-green-600 hover:text-green-700 text-xs" onClick={confirmAddPredictCourse}>✓</button>
                             <button className="text-red-500 hover:text-red-600 text-xs ml-1" onClick={cancelAddPredictCourse}>✕</button>
@@ -2324,7 +2072,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   </table>
                 </div>
                 <div className="text-xs text-muted-foreground mb-2">
-                  已有课程 GPA(锁定): {originalGPA.toFixed(2)}
+                  基准 GPA {displayMetric(baseSummary.gpa)}
                   {predictCourses.length > 0 && ` | 未来学分: ${predictCourses.reduce((s, c) => s + c.credits, 0).toFixed(1)}`}
                 </div>
                 {predictCourses.length > 0 && (
@@ -2335,26 +2083,12 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                     >🔮 开始预测</button>
                     <button
                       className="border border-border bg-background text-foreground px-4 py-1.5 rounded-lg text-sm font-medium cursor-pointer hover:bg-accent"
+                      disabled={!predictResult?.achievable}
+                      title="先计算预测，再将本次假设保存到未来学期"
                       onClick={async () => {
-                        const maxOrder = predictedOnly.length > 0
-                          ? Math.max(...predictedOnly.map(c => c.order), 0) + 1
-                          : 0
-                        const newRecords: ScoreRecord[] = predictCourses.map((pc, i) => ({
-                          id: `predict_import_${Date.now()}_${i}`,
-                          courseName: pc.courseName,
-                          credits: Math.round(pc.credits * 10) / 10,
-                          originalScore: 0,
-                          simulatedScore: pc.lockedScore,
-                          simulatedGP: pc.lockedGP,
-                          semester: -1,
-                          category: pc.category,
-                          source: 'manual' as const,
-                          isCorrected: false,
-                          isPredicted: true,
-                          order: maxOrder + i,
-                        }))
-                        const updated = [...courses, ...newRecords]
-                        await saveCourses(updated)
+                        if (!predictResult?.achievable) return
+                        const records = applyProposal(futureRecords(predictCourses, courses), predictResult)
+                        await saveCourses([...courses, ...records])
                         setPredictCourses([])
                       }}
                     >📥 导入至成绩列表</button>
@@ -2371,91 +2105,60 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   <div className="flex gap-4 mb-3 p-3 rounded-md bg-indigo-50/50 border border-indigo-200">
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">当前 GPA</div>
-                      <div className="text-lg font-semibold">{originalGPA.toFixed(2)}</div>
+                      <div className="text-lg font-semibold">{displayMetric(baseSummary.gpa)}</div>
                     </div>
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">当前均分</div>
-                      <div className="text-lg font-semibold">{originalAvg.toFixed(1)}</div>
+                      <div className="text-lg font-semibold">{displayMetric(baseSummary.weighted)}</div>
                     </div>
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">当前算术均分</div>
-                      <div className="text-lg font-semibold">{originalArithAvg.toFixed(1)}</div>
+                      <div className="text-lg font-semibold">{displayMetric(baseSummary.arithmetic)}</div>
                     </div>
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">当前总学分</div>
-                      <div className="text-lg font-semibold">{totalCredits}</div>
+                      <div className="text-lg font-semibold">{baseCourses.reduce((sum, c) => sum + c.credits, 0)}</div>
                     </div>
                     <div className="w-px bg-border" />
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">未来 GPA</div>
                       <div className={`text-lg font-semibold ${reverseResult.achievable ? 'text-green-600' : 'text-red-500'}`}>
-                        {reverseResult.estimatedGPA.toFixed(2)}
+                        {displayMetric(reverseResult.estimatedGPA)}
                       </div>
                     </div>
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">未来均分</div>
                       <div className={`text-lg font-semibold ${reverseResult.achievable ? 'text-green-600' : 'text-red-500'}`}>
-                        {(() => {
-                          // 计算未来均分：加权平均 = (已有真实课程总加权分 + 未来预测加权分) / (已有学分 + 未来学分)
-                          const existingWeightedSum = realCourses.reduce((s, c) => s + c.originalScore * c.credits, 0)
-                          const hasTargetGPA = !isNaN(parseFloat(targetGPA))
-                          const futureWeightedSum = reverseResult.targets.reduce((s, t) => {
-                            // 无目标时用预期成绩，有目标时用建议成绩
-                            const score = hasTargetGPA
-                              ? (t.locked ? (t.lockedValue ?? t.suggestedScore) : t.suggestedScore)
-                              : t.currentScore
-                            return s + score * t.credits
-                          }, 0)
-                          const futureCredits = reverseResult.targets.reduce((s, t) => s + t.credits, 0)
-                          const totalFutureCredits = totalCredits + futureCredits
-                          return totalFutureCredits > 0
-                            ? ((existingWeightedSum + futureWeightedSum) / totalFutureCredits).toFixed(1)
-                            : '—'
-                        })()}
+                        {displayMetric(reverseResult.estimatedWeightedAvg)}
                       </div>
                     </div>
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">未来算术均分</div>
                       <div className={`text-lg font-semibold ${reverseResult.achievable ? 'text-green-600' : 'text-red-500'}`}>
-                        {(() => {
-                          const existingSum = realCourses.reduce((s, c) => s + c.originalScore, 0)
-                          const existingCount = realCourses.length
-                          const hasTargetGPA = !isNaN(parseFloat(targetGPA))
-                          const futureSum = reverseResult.targets.reduce((s, t) => {
-                            const score = hasTargetGPA
-                              ? (t.locked ? (t.lockedValue ?? t.suggestedScore) : t.suggestedScore)
-                              : t.currentScore
-                            return s + score
-                          }, 0)
-                          const futureCount = reverseResult.targets.length
-                          const totalCount = existingCount + futureCount
-                          return totalCount > 0
-                            ? ((existingSum + futureSum) / totalCount).toFixed(1)
-                            : '—'
-                        })()}
+                        {displayMetric(reverseResult.estimatedArithAvg)}
                       </div>
                     </div>
                     <div className="text-center">
                       <div className="text-[10px] text-muted-foreground">未来总学分</div>
-                      <div className="text-lg font-semibold">{(totalCredits + reverseResult.targets.reduce((s, t) => s + t.credits, 0))}</div>
+                      <div className="text-lg font-semibold">{[...baseCourses, ...predictCourses].reduce((sum, c) => sum + c.credits, 0)}</div>
                     </div>
                   </div>
                 )}
 
                 <div className="flex items-center gap-2 mb-2 text-sm">
-                  {reverseMode === 'predict' && isNaN(parseFloat(targetGPA)) ? (
+                  {reverseMode === 'predict' && !reverseResult.hasTarget ? (
                     <span>预测结果（未设置目标）</span>
                   ) : (() => {
                     const r = reverseResult
                     const label = r.targetType === 'gpa' ? 'GPA' : r.targetType === 'weighted' ? '加权均分' : '算术均分'
                     const fmt = r.targetType === 'gpa' ? (v: number) => v.toFixed(2) : (v: number) => v.toFixed(1)
-                    const currentVal = r.targetType === 'gpa' ? originalGPA : r.targetType === 'weighted' ? originalAvg : originalArithAvg
-                    const displayGap = r.targetGPA - currentVal
+                    const currentVal = r.gap == null ? null : r.targetGPA - r.gap
+                    const displayGap = r.gap
                     return <>
-                      <span>当前{label} {fmt(currentVal)}</span>
+                      <span>当前{label} {currentVal == null ? '—' : fmt(currentVal)}</span>
                       <span>→ 目标{label} {fmt(r.targetGPA)}</span>
-                      <span className={displayGap >= 0 ? 'text-red-500' : 'text-green-500'}>
-                        差距 {displayGap >= 0 ? '+' : ''}{fmt(displayGap)}
+                      <span className={displayGap != null && displayGap > 0 ? 'text-red-500' : 'text-green-500'}>
+                        差距 {displayGap == null ? '—' : (displayGap > 0 ? '+' : '') + fmt(displayGap)}
                       </span>
                     </>
                   })()}
@@ -2472,7 +2175,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                             <>
                               <th className="text-center py-1">预期成绩</th>
                               <th className="text-center py-1">绩点</th>
-                              <th className="text-center py-1">建议成绩</th>
+                              <th className="text-center py-1">{reverseResult.inputUnit === 'gpa' ? '建议绩点' : '建议分数'}</th>
                             </>
                           ) : (
                             <>
@@ -2498,8 +2201,8 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                                   {(() => {
                                     const pc = predictCourses.find(p => p.id === t.courseId)
                                     const score = pc?.lockedScore
-                                    if (score == null) return '—'
-                                    return scoreToGPA(score, currentAlgo).toFixed(1)
+                                    if (targetAlgo.type === 'grade') return displayMetric(pc?.lockedGP)
+                                    return score == null ? '—' : displayMetric(scoreToGPA(score, targetAlgo))
                                   })()}
                                 </td>
                                 <td className="text-center py-1">
@@ -2518,7 +2221,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                                       onBlur={() => {
                                         const v = parseFloat(editTargetValue)
                                         const orig = parseFloat(editTargetOriginalRef.current)
-                                        if (!isNaN(v) && v >= 0 && v <= 100 && v !== orig) {
+                                        if (!isNaN(v) && v >= 0 && v <= (reverseResult.inputUnit === 'gpa' ? targetAlgo.maxGPA : 100) && v !== orig) {
                                           toggleLockTarget(t.courseId, true, v)
                                         }
                                         setEditingTargetId(null)
@@ -2527,7 +2230,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                                         if (e.key === 'Enter') {
                                           const v = parseFloat(editTargetValue)
                                           const orig = parseFloat(editTargetOriginalRef.current)
-                                          if (!isNaN(v) && v >= 0 && v <= 100 && v !== orig) {
+                                          if (!isNaN(v) && v >= 0 && v <= (reverseResult.inputUnit === 'gpa' ? targetAlgo.maxGPA : 100) && v !== orig) {
                                             toggleLockTarget(t.courseId, true, v)
                                           }
                                           setEditingTargetId(null)
@@ -2546,7 +2249,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                                         editTargetOriginalRef.current = val
                                       }}
                                     >
-                                      {t.currentScore} → <span style={{color: '#374151', fontWeight: 'bold'}}>{t.locked ? (t.lockedValue ?? t.suggestedScore) : t.suggestedScore}</span>
+                                      {t.currentScore ?? '—'} → <span style={{color: '#374151', fontWeight: 'bold'}}>{t.locked ? (t.lockedValue ?? t.suggestedScore) : t.suggestedScore}</span>
                                     </span>
                                   )}
                                 </td>
@@ -2561,68 +2264,20 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
 
                 <div className="flex items-center justify-between mt-2 flex-wrap gap-1">
                   <div className="text-sm flex items-center gap-3">
-                    {reverseMode === 'predict' ? (
-                      (() => {
-                        const r = reverseResult
-                        const rawInput = parseFloat(targetCardInput)
-                        const metrics = [
-                          { label: 'GPA', value: r.estimatedGPA.toFixed(2), target: targetCardIndex === 0 ? rawInput : parseFloat(getNonSelectedValue(0)), fmt: (v: number) => v.toFixed(2) },
-                          { label: '加权均分', value: r.estimatedWeightedAvg.toFixed(1), target: targetCardIndex === 1 ? rawInput : parseFloat(getNonSelectedValue(1)), fmt: (v: number) => v.toFixed(1) },
-                          { label: '算术均分', value: r.estimatedArithAvg.toFixed(1), target: targetCardIndex === 2 ? rawInput : parseFloat(getNonSelectedValue(2)), fmt: (v: number) => v.toFixed(1) },
-                        ]
-                        const ordered = [metrics[targetCardIndex], ...metrics.filter((_, i) => i !== targetCardIndex)]
-                        return <>{ordered.map((m, i) => {
-                          const isPrimary = i === 0
-                          const tgt = m.target
-                          const est = parseFloat(m.value)
-                          const diff = !isNaN(tgt) ? est - tgt : NaN
-                          return <Fragment key={m.label}>
-                            {i > 0 && <span className="text-border">|</span>}
-                            预估{m.label}: <span className={isPrimary ? (r.achievable ? 'text-green-600 font-medium' : 'text-red-500 font-medium') : 'text-green-600'}>
-                              {m.value}
-                            </span>
-                            {!isNaN(diff) && isPrimary && (diff >= 0 ? ' ✅' : ' ❌')}
-                            {!isNaN(diff) && !isPrimary && <span className={diff >= 0 ? 'text-green-600' : 'text-red-500'}> (目标{m.fmt(tgt)} {diff >= 0 ? '✅' : `差${Math.abs(diff).toFixed(1)}`})</span>}
-                          </Fragment>
-                        })}</>
-                      })()
-                    ) : (() => {
-                      const r = reverseResult
-                      const { estimatedGPA, estimatedWeightedAvg, estimatedArithAvg } = r
-                      const rawInput = parseFloat(targetCardInput)
-                      // 选中的卡片用用户原始输入（避免 GPA↔分数 往返精度损失），未选中的从 targetGPA 推导
-                      const metrics = [
-                        { label: 'GPA', value: estimatedGPA.toFixed(2), target: targetCardIndex === 0 ? rawInput : parseFloat(getNonSelectedValue(0)), fmt: (v: number) => v.toFixed(2) },
-                        { label: '加权均分', value: estimatedWeightedAvg.toFixed(1), target: targetCardIndex === 1 ? rawInput : parseFloat(getNonSelectedValue(1)), fmt: (v: number) => v.toFixed(1) },
-                        { label: '算术均分', value: estimatedArithAvg.toFixed(1), target: targetCardIndex === 2 ? rawInput : parseFloat(getNonSelectedValue(2)), fmt: (v: number) => v.toFixed(1) },
-                      ]
-                      // 按选中的目标卡片排序，主目标在前
-                      const ordered = [metrics[targetCardIndex], ...metrics.filter((_, i) => i !== targetCardIndex)]
-                      return <>{ordered.map((m, i) => {
-                        const isPrimary = i === 0
-                        const tgt = m.target
-                        const est = parseFloat(m.value)
-                        const diff = !isNaN(tgt) ? est - tgt : NaN
-                        return <Fragment key={m.label}>
-                          {i > 0 && <span className="text-border">|</span>}
-                          预估{m.label}: <span className={isPrimary ? (r.achievable ? 'text-green-600 font-medium' : 'text-red-500 font-medium') : 'text-green-600'}>
-                            {m.value}
-                          </span>
-                          {!isNaN(diff) && isPrimary && (diff >= 0 ? ' ✅' : ' ❌')}
-                          {!isNaN(diff) && !isPrimary && <span className={diff >= 0 ? 'text-green-600' : 'text-red-500'}> (目标{m.fmt(tgt)} {diff >= 0 ? '✅' : `差${Math.abs(diff).toFixed(1)}`})</span>}
-                        </Fragment>
-                      })}</>
-                    })()}
+                    {['GPA', '加权均分', '算术均分'].map((label, i) => <span key={label}>
+                      {label} {displayMetric([reverseResult.estimatedGPA, reverseResult.estimatedWeightedAvg, reverseResult.estimatedArithAvg][i])}
+                      {reverseResult.hasTarget && i === targetCardIndex && (reverseResult.achievable ? ' ✓' : '（未达标）')}
+                    </span>)}
                   </div>
                   <div className="flex gap-2">
                     <button
                       className="rounded border px-2 py-1 text-xs hover:bg-accent"
-                      onClick={() => { setRetakeResult(null); setPredictResult(null); setLockedScores(new Map()) }}
+                      onClick={runReverse}
                     >重新计算</button>
                     {reverseMode === 'retake' && (
                       <button
                         className="bg-primary text-primary-foreground px-3 py-1 rounded text-xs font-medium border-none cursor-pointer hover:bg-primary/90"
-                        onClick={applyReverseTargets}
+                        disabled={!retakeResult?.achievable} onClick={applyReverseTargets}
                       >一键应用到模拟成绩</button>
                     )}
                   </div>
@@ -2662,7 +2317,7 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                   {(() => {
                     const filtered = realCourses.filter(c => !retakeSearch || c.courseName.includes(retakeSearch))
                     const sorted = retakeSort === 'lowScore'
-                      ? [...filtered].sort((a, b) => a.originalScore - b.originalScore)
+                      ? [...filtered].sort((a, b) => (a.originalScore ?? Infinity) - (b.originalScore ?? Infinity))
                       : filtered
                     return sorted.map(c => (
                     <label key={c.id} className="flex items-center gap-2 py-0.5 hover:bg-accent/30 rounded px-1">
@@ -2680,8 +2335,8 @@ export default function ScoresPanel({ workspaceId }: { workspaceId: string }) {
                       />
                       <span>{c.courseName}</span>
                       <span className="text-xs text-muted-foreground">{c.credits}学分</span>
-                      <span className="text-xs">{c.originalScore}分</span>
-                      <span className="text-xs text-muted-foreground">({scoreToGrade(c.originalScore, currentAlgo)})</span>
+                      <span className="text-xs">{c.originalScore == null ? '—' : c.originalScore + '分'}</span>
+                      <span className="text-xs text-muted-foreground">({c.originalScore == null ? '—' : scoreToGrade(c.originalScore, currentAlgo)})</span>
                     </label>
                   ))})()}
                 </div>
@@ -2766,16 +2421,14 @@ function CourseRow({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const SimulationControl = IS_BROWSER_MODE ? 'button' : 'span'
-  const hasSim = course.simulatedScore !== null
-  const gp = course.gradePoint != null ? course.gradePoint.toFixed(1) : scoreToGPA(course.originalScore, algo).toFixed(1)
-  const simGP = course.simulatedGP != null ? course.simulatedGP.toFixed(1) : hasSim ? scoreToGPA(course.simulatedScore!, algo).toFixed(1) : null
-  const hasGrades = availableGrades.length > 0
-
-  // 计算当前成绩对应的等级
-  const origGrade = hasGrades ? scoreToGrade(course.originalScore, algo) : null
+  const hasSim = course.simulatedScore != null
+  const gp = displayMetric(courseGPA(course, 'originalScore', algo))
+  const simulationShown = algo.type === 'grade' ? course.simulatedGP != null : hasSim
+  const simGP = simulationShown ? displayMetric(courseGPA(course, 'simulatedScore', algo)) : null
+  const hasGrades = algo.type !== 'grade' && availableGrades.length > 0
+  const origGrade = hasGrades && course.originalScore != null ? scoreToGrade(course.originalScore, algo) : null
   const simGrade = hasGrades && hasSim ? scoreToGrade(course.simulatedScore!, algo) : null
-
-  const fmt = (v: number | null | undefined) => v != null ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : '—'
+  const fmt = (v: number | null | undefined) => v == null ? '—' : String(v)
 
   useEffect(() => {
     if (editingField && inputRef.current) {
@@ -2822,7 +2475,7 @@ function CourseRow({
           className={`cursor-text hover:bg-blue-50/50 rounded px-0.5 transition-colors ${opts?.origClass ?? ''} ${course.isCorrected ? 'text-orange-600' : ''}`}
           style={opts?.origStyle}
           title="双击编辑"
-          onDoubleClick={() => onStartEdit(origField, origValue)}
+          onDoubleClick={() => onStartEdit(origField, origValue === '—' ? '' : origValue)}
         >{origDisplay}</span>
         <span className="text-muted-foreground text-[10px] mx-0.5">(→</span>
         <SimulationControl
@@ -2896,7 +2549,7 @@ function CourseRow({
       ) : (
         <td className="py-1.5 text-center text-muted-foreground text-xs cursor-text hover:bg-blue-50/50 rounded transition-colors"
           title="双击编辑" onDoubleClick={() => onStartEdit('credits', String(course.credits))}>
-          {course.credits.toFixed(1)}
+          {String(course.credits)}
         </td>
       )}
 
@@ -2953,9 +2606,9 @@ function CourseRow({
           <>
             <span
               className={`cursor-text hover:bg-blue-50/50 rounded px-0.5 transition-colors`}
-              style={targetSuggestedScore != null ? { color: gapColor(course.originalScore, targetSuggestedScore), fontWeight: '500' } : undefined}
+              style={course.originalScore != null && targetSuggestedScore != null ? { color: gapColor(course.originalScore, targetSuggestedScore), fontWeight: '500' } : undefined}
               title="双击编辑"
-              onDoubleClick={() => onStartEdit('originalScore', String(course.originalScore))}
+              onDoubleClick={() => onStartEdit('originalScore', String(course.originalScore ?? ''))}
             >{fmt(course.originalScore)}</span>
             {hasGrades && origGrade && origGrade !== '-' && (
               <span className="text-[10px] text-indigo-500 ml-0.5 font-medium" title="双击可切换等级编辑">{origGrade}</span>

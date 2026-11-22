@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ArrowDown, ArrowUpRight, Database } from 'lucide-react'
 import { ensureDataFile, readJSON, SCORES_FILE } from '../src/libs/api'
@@ -7,6 +7,8 @@ import BrowserImport from './BrowserImport'
 import { DEMO_COURSES, DEMO_WORKSPACE, USER_WORKSPACE } from './demo'
 import { useSectionMotion } from './useSectionMotion'
 import Advisor from './Advisor'
+import { PRESET_ALGORITHMS, resolveAlgorithm } from '../src/libs/gpa-engine'
+import type { CustomAlgorithm } from '../src/libs/types'
 import JourneyScene from './JourneyScene'
 import Disclaimer from './Disclaimer'
 import { initialAgentConnection } from './agent'
@@ -28,6 +30,16 @@ function App() {
   useSectionMotion()
   const [workspaceId, setWorkspaceId] = useState('')
   const [active, setActive] = useState('home')
+  const nav = useRef<HTMLElement>(null)
+  const [algorithm, setAlgorithm] = useState(PRESET_ALGORITHMS.standard_4_0)
+  useEffect(() => {
+    const bar = nav.current
+    const link = bar?.querySelector('a[aria-current]')
+    if (!bar || !link || bar.scrollWidth <= bar.clientWidth) return
+    const bounds = bar.getBoundingClientRect(), item = link.getBoundingClientRect()
+    const delta = item.left < bounds.left ? item.left - bounds.left : Math.max(0, item.right - bounds.right)
+    if (delta) bar.scrollBy({ left: delta, behavior: 'instant' })
+  }, [active])
   const [courses, setCourses] = useState<ScoreRecord[]>(DEMO_COURSES)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -37,7 +49,8 @@ function App() {
     let alive = true
     ;(async () => {
       const userCourses = await ensureDataFile<ScoreRecord[]>(USER_WORKSPACE, SCORES_FILE, [])
-      const id = userCourses.length ? USER_WORKSPACE : DEMO_WORKSPACE
+      const hasPersonalConfig = await readJSON(USER_WORKSPACE, 'data/gpa_config.json').then(() => true, () => false)
+      const id = userCourses.length || hasPersonalConfig ? USER_WORKSPACE : DEMO_WORKSPACE
       const records = id === USER_WORKSPACE ? userCourses : await ensureDataFile(id, SCORES_FILE, DEMO_COURSES)
       await ensureDataFile(id, 'data/gpa_config.json', { activeAlgorithm: 'standard_4_0' })
       if (alive) {
@@ -49,14 +62,22 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!workspaceId) return
+    let alive = true
+    async function readAlgorithm() {
+      const config = await readJSON<{activeAlgorithm: string; customAlgorithms?: CustomAlgorithm[]}>(workspaceId, 'data/gpa_config.json')
+      if (alive) setAlgorithm(resolveAlgorithm(config.activeAlgorithm, config.customAlgorithms))
+    }
+    void readAlgorithm().catch(() => {})
     const sync = (event: Event) => {
       const detail = (event as CustomEvent).detail
+      if (detail.workspaceId === workspaceId && detail.filePath === 'data/gpa_config.json') void readAlgorithm().catch(() => {})
       if (detail.workspaceId === workspaceId && detail.filePath === SCORES_FILE) {
-        readJSON<ScoreRecord[]>(workspaceId, SCORES_FILE).then(setCourses).catch(() => {})
+        readJSON<ScoreRecord[]>(workspaceId, SCORES_FILE).then(rows => { if (alive) setCourses(rows) }).catch(() => {})
       }
     }
     window.addEventListener('gpa-data-change', sync)
-    return () => window.removeEventListener('gpa-data-change', sync)
+    return () => { alive = false; window.removeEventListener('gpa-data-change', sync) }
   }, [workspaceId])
 
   useEffect(() => {
@@ -93,7 +114,7 @@ function App() {
       <header className="site-header">
         <div className="site-width header-content">
           <a className="wordmark" href="#home" aria-label="If Grade 主页">If Grade<span>.</span></a>
-          <nav aria-label="主导航">
+          <nav ref={nav} aria-label="主导航">
             {navigation.map(item => (
               <a key={item.id} href={`#${item.id}`} aria-current={active === item.id ? 'location' : undefined}
                 onClick={() => setActive(item.id)}>{item.title}</a>
@@ -154,7 +175,7 @@ function App() {
         </section>
         <section id="advisor" className="page-section advisor-page">
           <div className="section-heading"><h2>下一步，也可以更有方向。</h2><p>使用自己的模型，生成学业分析和选校建议。</p></div>
-          {workspaceId && <Advisor key={workspaceId} workspaceId={workspaceId} courses={courses} connection={aiConnection} onConnectionChange={setAIConnection} />}
+          {workspaceId && <Advisor key={workspaceId} workspaceId={workspaceId} courses={courses} algorithm={algorithm} connection={aiConnection} onConnectionChange={setAIConnection} />}
         </section>
       </main>
       <div className="site-width"><Disclaimer /></div>

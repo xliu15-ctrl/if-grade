@@ -9,7 +9,8 @@ import type { ScoreRecord, AlgorithmConfig, CustomAlgorithm } from '../libs/type
 import {
   calculateGPA, weightedAvg, arithmeticAvg, getSemesterStats,
   scoreToGPA, calculateWESGPA,
-  PRESET_ALGORITHMS, DEFAULT_WES_CONFIG, customToAlgoConfig,
+  PRESET_ALGORITHMS, resolveAlgorithm, courseGPA, isModified, wesCourse, summarize, displayMetric,
+  gpaImpacts, improvementData, scoreRanges, distribution,
 } from '../libs/gpa-engine'
 import { ensureDataFile, readJSON, writeJSON, syncKBManifest, API_PREFIX, IS_SITE_MODE, IS_BROWSER_MODE, ensureGradesPlugin } from '../libs/api'
 import { SetupBanner } from '../libs/SetupBanner'
@@ -32,14 +33,6 @@ const C = {
   purple: IS_BROWSER_MODE ? '#ab815f' : '#8b5cf6',
 } as const
 
-const SCORE_RANGES = [
-  { lo: 0, hi: 59, label: '0-59' },
-  { lo: 60, hi: 69, label: '60-69' },
-  { lo: 70, hi: 79, label: '70-79' },
-  { lo: 80, hi: 89, label: '80-89' },
-  { lo: 90, hi: 100, label: '90-100' },
-]
-
 // ============================================================
 // 主组件
 // ============================================================
@@ -53,7 +46,7 @@ export default function AnalyzePanel({ workspaceId, view }: { workspaceId: strin
   try { const raw = sessionStorage.getItem(ANALYZE_CACHE_KEY); if (raw) initCache = JSON.parse(raw) } catch {}
 
   const [courses, setCourses] = useState<ScoreRecord[]>(initCache.courses || [])
-  const [algoId, setAlgoId] = useState(initCache.algoId || 'five_point')
+  const [algoId, setAlgoId] = useState(initCache.algoId || 'standard_4_0')
   const [customAlgorithms, setCustomAlgorithms] = useState<CustomAlgorithm[]>([])
   const [loading, setLoading] = useState(false) // 不再显示加载中，用缓存直出
   const [refreshing, setRefreshing] = useState(false)
@@ -191,12 +184,12 @@ export default function AnalyzePanel({ workspaceId, view }: { workspaceId: strin
       const config = await readJSON<{ activeAlgorithm: string; customAlgorithms?: CustomAlgorithm[] }>(workspaceId, CONFIG_FILE)
       setCustomAlgorithms(config?.customAlgorithms || [])
       setCourses(data || [])
-      const configuredId = config?.activeAlgorithm || 'five_point'
+      const configuredId = config?.activeAlgorithm || 'standard_4_0'
       setAlgoId(Object.entries(PRESET_ALGORITHMS).find(([key, value]) =>
         key === configuredId || value.id === configuredId
       )?.[0] || configuredId)
       // 同步缓存到 sessionStorage，下次切 Tab 直出
-      try { sessionStorage.setItem(ANALYZE_CACHE_KEY, JSON.stringify({ courses: data || [], algoId: config?.activeAlgorithm || 'five_point' })) } catch {}
+      try { sessionStorage.setItem(ANALYZE_CACHE_KEY, JSON.stringify({ courses: data || [], algoId: config?.activeAlgorithm || 'standard_4_0' })) } catch {}
       isInitialLoad.current = false
     } catch (e) {
       if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
@@ -231,8 +224,7 @@ export default function AnalyzePanel({ workspaceId, view }: { workspaceId: strin
   }, [loadData])
 
   // 分离真实课程和预测课程（必须在使用它们的 useEffect 之前）
-  const custom = customAlgorithms.find(a => a.id === algoId)
-  const algo = custom ? customToAlgoConfig(custom) : PRESET_ALGORITHMS[algoId] || PRESET_ALGORITHMS.five_point
+  const algo = resolveAlgorithm(algoId, customAlgorithms)
   const realCourses = courses.filter(c => !c.isPredicted)
   const predictedCourses = courses.filter(c => c.isPredicted)
   const semStats = getSemesterStats(realCourses, algo)
@@ -243,17 +235,17 @@ export default function AnalyzePanel({ workspaceId, view }: { workspaceId: strin
       if (isInitialLoad.current) return
       try {
         const data = await ensureDataFile<ScoreRecord[]>(workspaceId, SCORES_FILE, [])
-        if (data && data.length !== realCourses.length) {
+        if (data && data.length !== courses.length) {
           loadData()
         }
       } catch { /* 静默失败 */ }
     }, 5000)
     return () => clearInterval(interval)
-  }, [workspaceId, realCourses.length, loadData])
+  }, [workspaceId, courses.length, loadData])
 
   // 自动保存 GPA 计算结果到 gpa_result.json（供 AI 技能读取）
   useEffect(() => {
-    if (realCourses.length === 0 || isInitialLoad.current) return
+    if (isInitialLoad.current) return
 
     const saveGpaResult = async () => {
       try {
@@ -265,16 +257,16 @@ export default function AnalyzePanel({ workspaceId, view }: { workspaceId: strin
           bySemester[sem].push(c)
         })
 
-        const semesterStats = Object.keys(bySemester).sort().map(sem => {
+        const semesterStats = Object.keys(bySemester).sort((a,b) => Number(a) - Number(b)).map(sem => {
           const semCourses = bySemester[sem]
           return {
             semester: sem,
             courseCount: semCourses.length,
             totalCredits: semCourses.reduce((s, c) => s + c.credits, 0),
-            originalAvg: weightedAvg(semCourses, 'originalScore'),
-            simulatedAvg: weightedAvg(semCourses, 'simulatedScore'),
-            originalGPA: calculateGPA(semCourses, 'originalScore', algo),
-            simulatedGPA: calculateGPA(semCourses, 'simulatedScore', algo),
+            originalAvg: summarize(semCourses, 'originalScore', algo).weighted,
+            simulatedAvg: summarize(semCourses, 'simulatedScore', algo).weighted,
+            originalGPA: summarize(semCourses, 'originalScore', algo).gpa,
+            simulatedGPA: summarize(semCourses, 'simulatedScore', algo).gpa,
           }
         })
 
@@ -285,17 +277,17 @@ export default function AnalyzePanel({ workspaceId, view }: { workspaceId: strin
           overall: {
             courseCount: realCourses.length,
             totalCredits: realCourses.reduce((s, c) => s + c.credits, 0),
-            originalAvg: weightedAvg(realCourses, 'originalScore'),
-            simulatedAvg: weightedAvg(realCourses, 'simulatedScore'),
-            originalArithAvg: arithmeticAvg(realCourses, 'originalScore'),
-            simulatedArithAvg: arithmeticAvg(realCourses, 'simulatedScore'),
-            originalGPA: calculateGPA(realCourses, 'originalScore', algo),
-            simulatedGPA: calculateGPA(realCourses, 'simulatedScore', algo),
-            predictedGPA: hasPred ? calculateGPA(allForPred, 'simulatedScore', algo) : null,
-            predictedAvg: hasPred ? weightedAvg(allForPred, 'simulatedScore') : null,
-            predictedArithAvg: hasPred ? arithmeticAvg(allForPred, 'simulatedScore') : null,
-            wesOriginalGPA: calculateWESGPA(realCourses, 'originalScore'),
-            wesSimulatedGPA: calculateWESGPA(realCourses, 'simulatedScore'),
+            originalAvg: summarize(realCourses, 'originalScore', algo).weighted,
+            simulatedAvg: summarize(realCourses, 'simulatedScore', algo).weighted,
+            originalArithAvg: summarize(realCourses, 'originalScore', algo).arithmetic,
+            simulatedArithAvg: summarize(realCourses, 'simulatedScore', algo).arithmetic,
+            originalGPA: summarize(realCourses, 'originalScore', algo).gpa,
+            simulatedGPA: summarize(realCourses, 'simulatedScore', algo).gpa,
+            predictedGPA: hasPred ? summarize(allForPred, 'simulatedScore', algo).gpa : null,
+            predictedAvg: hasPred ? summarize(allForPred, 'simulatedScore', algo).weighted : null,
+            predictedArithAvg: hasPred ? summarize(allForPred, 'simulatedScore', algo).arithmetic : null,
+            wesOriginalGPA: summarize(realCourses, 'originalScore', PRESET_ALGORITHMS.wes_4_0).gpa,
+            wesSimulatedGPA: summarize(realCourses, 'simulatedScore', PRESET_ALGORITHMS.wes_4_0).gpa,
           },
           semesters: semesterStats,
         }
@@ -595,9 +587,9 @@ function SVGLineChart({ data, xKey, lines, height = 200, yLabel }: {
   const pad = { top: 10, right: 10, bottom: 52, left: 45 }
   const w = 500, h = height
   const cw = w - pad.left - pad.right, ch = h - pad.top - pad.bottom
-  const allVals = data.flatMap(d => lines.map(l => Number(d[l.key]) || 0))
-  const minVal = Math.min(...allVals) * 0.9
-  const maxVal = Math.max(...allVals) * 1.1 || 1
+  const allVals = data.flatMap(d => lines.map(l => d[l.key]).filter(Number.isFinite))
+  const minVal = allVals.length ? Math.min(...allVals) * 0.9 : 0
+  const maxVal = allVals.length ? Math.max(...allVals) * 1.1 || 1 : 1
   const range = maxVal - minVal || 1
   const n = data.length
 
@@ -622,18 +614,12 @@ function SVGLineChart({ data, xKey, lines, height = 200, yLabel }: {
       <line x1={pad.left} y1={pad.top + ch} x2={w - pad.right} y2={pad.top + ch} stroke={C.text} />
       {/* 折线 */}
       {lines.map(line => {
-        const pts = data.map((d, i) => {
-          const p = toXY(i, Number(d[line.key]) || 0)
-          return `${p.x},${p.y}`
-        }).join(' ')
+        const points = data.map((row, i) => Number.isFinite(row[line.key]) ? toXY(i, row[line.key]) : null)
+        const path = points.map((p, i) => p ? ((i && points[i-1]) ? 'L' : 'M') + p.x + ' ' + p.y : '').join(' ')
         return (
           <g key={line.key}>
-            <polyline points={pts} fill="none" stroke={line.color} strokeWidth={2}
-              strokeDasharray={line.dash ? '6,3' : undefined} />
-            {data.map((d, i) => {
-              const p = toXY(i, Number(d[line.key]) || 0)
-              return <circle key={i} cx={p.x} cy={p.y} r={3} fill={line.color} />
-            })}
+            <path d={path} fill="none" stroke={line.color} strokeWidth={2} strokeDasharray={line.dash ? '6,3' : undefined} />
+            {points.map((p, i) => p && <circle key={i} cx={p.x} cy={p.y} r={3} fill={line.color} />)}
           </g>
         )
       })}
@@ -667,87 +653,44 @@ function SVGLineChart({ data, xKey, lines, height = 200, yLabel }: {
 // ============================================================
 
 function getDistData(realCourses: ScoreRecord[], predictedCourses: ScoreRecord[], mode: 'count' | 'percent') {
-  const total = realCourses.length || 1
-  return SCORE_RANGES.map(r => {
-    const origCount = realCourses.filter(c => c.originalScore >= r.lo && c.originalScore < r.hi + 1).length
-    const simCount = realCourses.filter(c => {
-      const score = c.simulatedScore ?? c.originalScore
-      return score >= r.lo && score < r.hi + 1
-    }).length
-    const predCount = predictedCourses.filter(c => c.simulatedScore !== null && c.simulatedScore >= r.lo && c.simulatedScore < r.hi + 1).length
-    return {
-      range: r.label,
-      原始: mode === 'count' ? origCount : +(origCount / total * 100).toFixed(1),
-      模拟: mode === 'count' ? simCount : +(simCount / total * 100).toFixed(1),
-      预测: mode === 'count' ? predCount : +(predCount / (predictedCourses.length || 1) * 100).toFixed(1),
-    }
-  })
+  const series = (rows: ScoreRecord[], key: 'originalScore' | 'simulatedScore') => {
+    const counts = distribution(rows, key), total = counts.reduce((s, v) => s + v, 0)
+    return mode === 'count' ? counts : counts.map(v => total ? +(v * 100 / total).toFixed(1) : 0)
+  }
+  const orig = series(realCourses, 'originalScore'), sim = series(realCourses, 'simulatedScore'), pred = series(predictedCourses, 'simulatedScore')
+  return scoreRanges.map((range, i) => ({range, 原始: orig[i], 模拟: sim[i], 预测: pred[i]}))
 }
 
-function getTrendData(semStats: ReturnType<typeof getSemesterStats>, predictedGPA?: number, predictedAvg?: number) {
-  const data = semStats.map(s => ({
-    name: `第${s.semester}学期`,
-    '原始 GPA': +s.originalGPA.toFixed(2),
-    '模拟 GPA': +s.simulatedGPA.toFixed(2),
-    '原始均分': +s.originalAvg.toFixed(1),
-    '模拟均分': +s.simulatedAvg.toFixed(1),
-  }))
-  // 如果有预测数据，将预测值附着在最后一个学期数据点上
-  if (predictedGPA !== undefined && predictedAvg !== undefined && data.length > 0) {
-    const last = data[data.length - 1]
-    ;(last as any)['预测 GPA'] = +predictedGPA.toFixed(2)
-    ;(last as any)['预测均分'] = +predictedAvg.toFixed(1)
+function getTrendData(courses: ScoreRecord[], algo: AlgorithmConfig) {
+  const groups = new Map<number, ScoreRecord[]>()
+  const lastReal = Math.max(0, ...courses.filter(c => !c.isPredicted).map(c => c.semester))
+  for (const course of courses) {
+    const term = course.isPredicted && course.semester < 1 ? lastReal + 1 : course.semester
+    const group = groups.get(term) || []
+    group.push(course)
+    groups.set(term, group)
   }
-  return data
+  return [...groups.entries()].sort(([a], [b]) => a - b).map(([term, rows]) => {
+    const real = rows.filter(c => !c.isPredicted)
+    const projected = rows.filter(c => c.isPredicted)
+    const orig = summarize(real, 'originalScore', algo), sim = summarize(real, 'simulatedScore', algo)
+    const pred = summarize(projected, 'simulatedScore', algo)
+    return { name: '第' + term + '学期', '原始 GPA': orig.gpa, '模拟 GPA': sim.gpa, '预测 GPA': pred.gpa,
+      原始均分: orig.weighted, 模拟均分: sim.weighted, 预测均分: pred.weighted }
+  })
 }
 
 function getWaterfallData(courses: ScoreRecord[], algo: AlgorithmConfig) {
-  const modified = courses.filter(c => c.simulatedScore !== null)
-  if (!modified.length) return []
-  const tc = courses.reduce((s, c) => s + c.credits, 0)
-  if (!tc) return []
-  const items = modified.map(c => {
-    const impact = +((scoreToGPA(c.simulatedScore!, algo) - scoreToGPA(c.originalScore, algo)) * c.credits / tc).toFixed(4)
-    return { name: c.courseName.length > 8 ? c.courseName.slice(0, 8) + '…' : c.courseName, impact }
-  })
-  items.push({ name: '总变化', impact: +items.reduce((s, it) => s + it.impact, 0).toFixed(4) })
-  return items
+  const impacts = gpaImpacts(courses, algo).sort((a,b) => Math.abs(b.delta)-Math.abs(a.delta))
+  if (!impacts.length) return []
+  const items = impacts.slice(0,12).map(({ course, delta }) => ({ name: course.courseName.slice(0,8), impact: +delta.toFixed(4) }))
+  return [...items, { name: '总变化', impact: +impacts.reduce((sum, c) => sum + c.delta, 0).toFixed(4) }]
 }
 
 function getAlgoRadarData(courses: ScoreRecord[]) {
   return Object.values(PRESET_ALGORITHMS).map(a => ({
-    name: a.name,
-    maxGPA: a.maxGPA,
-    available: a.type !== 'grade' || courses.some(course => course.gradePoint != null),
-    原始: calculateGPA(courses, 'originalScore', a),
-    模拟: calculateGPA(courses, 'simulatedScore', a),
+    name: a.name, maxGPA: a.maxGPA, 原始: summarize(courses, 'originalScore', a).gpa, 模拟: summarize(courses, 'simulatedScore', a).gpa,
   }))
-}
-
-function getImprovementData(courses: ScoreRecord[], algo: AlgorithmConfig) {
-  const deltas = [5, 10, 15, 20]
-  const tc = courses.reduce((s, c) => s + c.credits, 0) || 1
-  // 按学分加权提分潜力排序：学分 × 提10分后的GPA增量
-  const ranked = [...courses]
-    .map(c => {
-      const impact10 = (scoreToGPA(Math.min(100, c.originalScore + 10), algo) - scoreToGPA(c.originalScore, algo)) * c.credits / tc
-      return { ...c, impact10 }
-    })
-    .sort((a, b) => b.impact10 - a.impact10)
-    .slice(0, 12)
-  return ranked.map(c => {
-    const entry: Record<string, any> = {
-      id: c.id,
-      name: c.courseName,
-      credits: c.credits,
-      score: c.originalScore,
-    }
-    for (const d of deltas) {
-      const ns = Math.min(100, c.originalScore + d)
-      entry[`+${d}`] = +((scoreToGPA(ns, algo) - scoreToGPA(c.originalScore, algo)) * c.credits / tc).toFixed(4)
-    }
-    return entry
-  })
 }
 
 // ============================================================
@@ -764,7 +707,7 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
   const realCourses = courses.filter(c => !c.isPredicted)
   const predictedCourses = courses.filter(c => c.isPredicted)
   const hasPredicted = predictedCourses.length > 0
-  const hasMod = realCourses.some(c => c.simulatedScore !== null)
+  const hasMod = realCourses.some(isModified)
 
   // 趋势图线条定义（颜色鲜明区分）
   const GPA_LINES = [
@@ -789,6 +732,18 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
     if (hasPredicted) init.add('预测均分')
     return init
   })
+  useEffect(() => {
+    if (hasMod) {
+      setVisibleGPALines(old => new Set([...old, '模拟 GPA']))
+      setVisibleAvgLines(old => new Set([...old, '模拟均分']))
+    }
+  }, [hasMod])
+  useEffect(() => {
+    if (hasPredicted) {
+      setVisibleGPALines(old => new Set([...old, '预测 GPA']))
+      setVisibleAvgLines(old => new Set([...old, '预测均分']))
+    }
+  }, [hasPredicted])
   const toggleGPALine = (key: string) => {
     setVisibleGPALines(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   }
@@ -796,36 +751,25 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
     setVisibleAvgLines(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   }
 
-  const origGPA = calculateGPA(realCourses, 'originalScore', algo)
-  const simGPA = calculateGPA(realCourses, 'simulatedScore', algo)
-  const predGPA = hasPredicted ? calculateGPA(courses, 'simulatedScore', algo) : 0
-  const origAvg = weightedAvg(realCourses, 'originalScore')
-  const simAvg = weightedAvg(realCourses, 'simulatedScore')
-  const predAvg = hasPredicted ? weightedAvg(courses, 'simulatedScore') : 0
-  const origArithAvg = arithmeticAvg(realCourses, 'originalScore')
-  const simArithAvg = arithmeticAvg(realCourses, 'simulatedScore')
-  const wesOrig = calculateWESGPA(realCourses, 'originalScore')
-  const wesSim = calculateWESGPA(realCourses, 'simulatedScore')
+  const {gpa: origGPA, weighted: origAvg, arithmetic: origArithAvg} = summarize(realCourses, 'originalScore', algo)
+  const {gpa: simGPA, weighted: simAvg, arithmetic: simArithAvg} = summarize(realCourses, 'simulatedScore', algo)
+  const wesOrig = summarize(realCourses, 'originalScore', PRESET_ALGORITHMS.wes_4_0).gpa
+  const wesSim = summarize(realCourses, 'simulatedScore', PRESET_ALGORITHMS.wes_4_0).gpa
   const totalCredits = realCourses.reduce((s, c) => s + c.credits, 0)
-  // 按原始成绩升序排列，取最低3门
-  const sortedByScore = [...realCourses].sort((a, b) => a.originalScore - b.originalScore)
-  const lowest3 = sortedByScore.slice(0, 3)
-  // 建议提分：综合考虑学分权重和提分空间 (学分 × (100-成绩))
-  const improvementRank = [...realCourses]
-    .map(c => ({ ...c, potential: +(c.credits * (100 - c.originalScore)).toFixed(1) }))
-    .sort((a, b) => b.potential - a.potential)
-    .slice(0, 3)
+  const lowest3 = realCourses.filter(c => c.originalScore != null).sort((a, b) => a.originalScore! - b.originalScore!).slice(0, 3)
+  const impData = improvementData(realCourses, algo)
+  const improvementRank = impData.filter(c => c['+10'] > 0).slice(0,3)
 
   const distData = getDistData(realCourses, predictedCourses, distMode)
-  const trendData = getTrendData(semStats, hasPredicted ? predGPA : undefined, hasPredicted ? predAvg : undefined)
+  const trendData = getTrendData(courses, algo)
   const waterfallData = getWaterfallData(realCourses, algo)
   const algoData = getAlgoRadarData(realCourses)
-  const impData = getImprovementData(realCourses, algo)
   const trendLines = trendMetric === 'gpa' ? GPA_LINES : AVG_LINES
   const selectedTrendLines = trendMetric === 'gpa' ? visibleGPALines : visibleAvgLines
   const displayedTrendLines = trendLines.filter(line => selectedTrendLines.has(line.key))
 
-  const diff = (o: number, s: number, d = 2) => {
+  const diff = (o: number | null, s: number | null, d = 2) => {
+    if (o == null || s == null) return null
     const v = s - o
     if (Math.abs(v) < 0.001) return null
     const isUp = v > 0
@@ -836,18 +780,18 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
     <DrawRevision.Provider value={JSON.stringify([courses, algo.id])}><div className="report-dashboard">
       <SetupBanner workspaceId={workspaceId} />
       <div className="report-kpis">
-        <KPICard label="GPA" value={hasMod ? <>{origGPA.toFixed(2)} <span className="metric-arrow">→</span> <span style={{ color: C.purple }}>{simGPA.toFixed(2)}</span></> : origGPA.toFixed(2)} sub={diff(origGPA, simGPA)} />
-        <KPICard label="加权均分" value={hasMod ? <>{origAvg.toFixed(1)} <span className="metric-arrow">→</span> <span style={{ color: C.purple }}>{simAvg.toFixed(1)}</span></> : origAvg.toFixed(1)} sub={diff(origAvg, simAvg, 1)} />
-        <KPICard label="算术均分" value={hasMod ? <>{origArithAvg.toFixed(1)} <span className="metric-arrow">→</span> <span style={{ color: C.purple }}>{simArithAvg.toFixed(1)}</span></> : origArithAvg.toFixed(1)} sub={diff(origArithAvg, simArithAvg, 1)} />
+        <KPICard label="GPA" value={hasMod ? <>{displayMetric(origGPA)} <span className="metric-arrow">→</span> <span style={{ color: C.purple }}>{displayMetric(simGPA)}</span></> : displayMetric(origGPA)} sub={diff(origGPA, simGPA)} />
+        <KPICard label="加权均分" value={hasMod ? <>{displayMetric(origAvg)} <span className="metric-arrow">→</span> <span style={{ color: C.purple }}>{displayMetric(simAvg)}</span></> : displayMetric(origAvg)} sub={diff(origAvg, simAvg, 1)} />
+        <KPICard label="算术均分" value={hasMod ? <>{displayMetric(origArithAvg)} <span className="metric-arrow">→</span> <span style={{ color: C.purple }}>{displayMetric(simArithAvg)}</span></> : displayMetric(origArithAvg)} sub={diff(origArithAvg, simArithAvg, 1)} />
         <KPICard label="学分 / 课程" value={`${totalCredits} 学分`} sub={`${realCourses.length} 门课程`} />
-        <KPICard label="WES GPA" value={hasMod ? `${wesOrig.toFixed(2)} → ${wesSim.toFixed(2)}` : wesOrig.toFixed(2)} sub={diff(wesOrig, wesSim)} />
-        <KPICard label="最低三科" value={`${lowest3.map(c => c.originalScore).join(' / ')} 分`} sub={lowest3.map(c => c.courseName).join('、')} />
+        <KPICard label="WES GPA" value={hasMod ? `${displayMetric(wesOrig)} → ${displayMetric(wesSim)}` : displayMetric(wesOrig)} sub={diff(wesOrig, wesSim)} />
+        <KPICard label="最低三科" value={lowest3.length ? lowest3.map(c => c.originalScore).join(' / ') + ' 分' : '—'} sub={lowest3.map(c => c.courseName).join('、')} />
       </div>
 
-      <aside className="report-priority">
+      {improvementRank.length > 0 && <aside className="report-priority">
         <span>优先关注</span>
-        {improvementRank.map(c => <span className="priority-course" key={c.id}>{c.courseName}<small>{c.originalScore} 分 · {c.credits} 学分</small></span>)}
-      </aside>
+        {improvementRank.map(c => <span className="priority-course" key={c.id}>{c.name}<small>{c.score} 分 · {c.credits} 学分</small></span>)}
+      </aside>}
 
       <section className="report-group" aria-labelledby="report-distribution">
         <div className="report-group-heading"><h3 id="report-distribution">成绩分布与学期趋势</h3></div>
@@ -893,7 +837,7 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
           <Card title="课程对 GPA 的影响">
             {hasMod && waterfallData.length > 0 ? <>
               <SVGBarChart data={waterfallData} xKey="name" bars={[{ key: 'impact', color: C.primary, label: 'GPA 变化量' }]} height={220} />
-              <p className="report-footnote">正值为提升，负值为下降。最后一列为总变化。</p>
+              <p className="report-footnote">展示绝对影响最大的前 12 门。最后一列为全部课程总变化。</p>
             </> : <p className="report-empty">在成绩模拟中调整分数，即可查看每门课程带来的 GPA 变化。</p>}
           </Card>
 
@@ -904,7 +848,7 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
               {algoData.map(item => (
                 <div className="algorithm-row" key={item.name}>
                   <span className="algorithm-name" title={item.name}>{item.name}</span>
-                  {item.available ? <>
+                  {item.原始 != null && item.模拟 != null ? <>
                     <div className="algorithm-track" aria-hidden="true">
                       <i className="algorithm-range" style={{
                         left: `${Math.max(0, Math.min(item.原始, item.模拟) / item.maxGPA * 100)}%`,
@@ -914,7 +858,7 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
                       <i className="simulated-dot" style={{ left: `${Math.max(0, Math.min(100, item.模拟 / item.maxGPA * 100))}%` }} />
                     </div>
                     <span className="algorithm-values">{item.原始.toFixed(2)} <span>→</span> <b>{item.模拟.toFixed(2)}</b></span>
-                  </> : <span className="algorithm-unavailable">缺少原始绩点</span>}
+                  </> : <span className="algorithm-unavailable">{displayMetric(item.原始)} → {displayMetric(item.模拟)}</span>}
                 </div>
               ))}
             </div>
@@ -931,14 +875,14 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
               <table className="report-table">
                 <thead><tr><th>课程</th><th>成绩</th><th>GPA</th><th>学分</th><th>分数</th></tr></thead>
                 <tbody>
-                  {[...realCourses].sort((a, b) => a.originalScore - b.originalScore).map(course => (
+                  {[...realCourses].sort((a, b) => (a.originalScore ?? Infinity) - (b.originalScore ?? Infinity)).map(course => (
                     <tr key={course.id}>
                       <td title={course.courseName}>{course.courseName}</td>
-                      <td>{course.originalScore}</td>
-                      <td>{scoreToGPA(course.originalScore, algo).toFixed(2)}</td>
+                      <td>{course.originalScore ?? '—'}</td>
+                      <td>{displayMetric(courseGPA(course, 'originalScore', algo))}</td>
                       <td>{course.credits}</td>
                       <td><div className="course-score-track" aria-label={`${course.originalScore} 分`}>
-                        <span style={{ width: `${Math.max(0, Math.min(100, course.originalScore))}%` }} />
+                        <span style={{ width: `${Math.max(0, Math.min(100, course.originalScore ?? 0))}%` }} />
                       </div></td>
                     </tr>
                   ))}
@@ -960,7 +904,7 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
                 <thead><tr><th>课程</th><th>当前分</th><th>+5 分</th><th>+10 分</th><th>+15 分</th><th>+20 分</th></tr></thead>
                 <tbody>{impData.slice(0, 8).map(course => <tr key={course.id}>
                   <td title={course.name}>{course.name}</td><td>{course.score}</td>
-                  {['+5', '+10', '+15', '+20'].map(key => <td key={key}>
+                  {(['+5', '+10', '+15', '+20'] as const).map(key => <td key={key}>
                     {course[key] > 0.0001 ? `+${course[key].toFixed(3)}` : '—'}
                   </td>)}
                 </tr>)}
@@ -981,48 +925,35 @@ function ChartsTab({ courses, algo, semStats, workspaceId }: {
 // ============================================================
 
 function WESTab({ courses, algo }: { courses: ScoreRecord[]; algo: AlgorithmConfig }) {
-  const hasMod = courses.some(c => c.simulatedScore !== null)
-  const wesConfig = DEFAULT_WES_CONFIG
-  const wesOriginal = calculateWESGPA(courses, 'originalScore')
-  const wesSimulated = calculateWESGPA(courses, 'simulatedScore')
-
+  const hasMod = courses.some(isModified)
+  const wesOriginal = summarize(courses, 'originalScore', PRESET_ALGORITHMS.wes_4_0).gpa
+  const wesSimulated = summarize(courses, 'simulatedScore', PRESET_ALGORITHMS.wes_4_0).gpa
   const rows = courses.map(c => {
-    const coeff = wesConfig.creditCoefficients[c.category as keyof typeof wesConfig.creditCoefficients] ?? 0.75
-    const usCredits = (c.credits * coeff).toFixed(1)
-    const excluded = wesConfig.excludeCategories.includes(c.category as any)
-    const score = c.simulatedScore ?? c.originalScore
-    const wesGrade = score >= 85 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : 'F'
-    const wesGP = score >= 85 ? 4.0 : score >= 75 ? 3.0 : score >= 60 ? 2.0 : 0
-    const warning = !excluded && score >= 75 && score < 85 ? '⚡B→A仅差' + (85 - score) + '分' : ''
-    return { ...c, score, wesGrade, wesGP, usCredits, excluded, warning }
+    const row = wesCourse(c, 'simulatedScore')
+    const warning = !row.excluded && row.grade === 'B' ? '距 A 档 ' + Number((85 - row.score!).toFixed(2)) + ' 分' : ''
+    return { ...c, score: row.score, wesGrade: row.grade, wesGP: row.gpa, usCredits: row.credits,
+      coeff: row.coefficient, excluded: row.excluded, warning }
   })
-
   const bCourses = rows.filter(r => r.warning)
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-lg border p-4 bg-white">
-          <div className="text-xs text-muted-foreground">原始 GPA → WES 预估</div>
-          <div className="text-2xl font-bold mt-1">
-            {calculateGPA(courses, 'originalScore', algo).toFixed(2)} → {wesOriginal.toFixed(2)}
-            <span className={`text-sm ml-2 ${wesOriginal > calculateGPA(courses, 'originalScore', algo) ? 'text-green-600' : 'text-red-500'}`}>
-              {wesOriginal > calculateGPA(courses, 'originalScore', algo) ? '↑' : '↓'}{Math.abs(wesOriginal - calculateGPA(courses, 'originalScore', algo)).toFixed(2)}
-            </span>
-          </div>
+          <div className="text-xs text-muted-foreground">原始成绩 · WES 估算</div>
+          <div className="text-2xl font-bold mt-1">{displayMetric(wesOriginal)}</div>
         </div>
         <div className="rounded-lg border p-4 bg-white">
-          <div className="text-xs text-muted-foreground">模拟 GPA → WES 预估</div>
-          <div className="text-2xl font-bold mt-1 text-blue-600">
-            {hasMod ? `${calculateGPA(courses, 'simulatedScore', algo).toFixed(2)} → ${wesSimulated.toFixed(2)}` : '—'}
-          </div>
+          <div className="text-xs text-muted-foreground">模拟成绩 · WES 估算</div>
+          <div className="text-2xl font-bold mt-1">{displayMetric(wesSimulated)}</div>
         </div>
       </div>
+      <p className="text-xs text-muted-foreground">本工具按预设分档和课程系数估算 4.0 制 GPA。正式认证以 WES 评估为准。</p>
 
       {bCourses.length > 0 && (
         <div className="rounded-lg border border-yellow-300 bg-yellow-50 p-4">
-          <h3 className="text-sm font-medium text-yellow-800 mb-2">⚡ WES 降分预警（{bCourses.length}门课）</h3>
-          <p className="text-xs text-yellow-700 mb-2">以下课程当前在B区间(75-84)，WES中计为3.0。只需提高数分即可跨越到A区间(4.0)：</p>
+          <h3 className="text-sm font-medium text-yellow-800 mb-2">⚡ 可跨档课程（{bCourses.length}门课）</h3>
+          <p className="text-xs text-yellow-700 mb-2">模型将 75 至低于 85 分计为 B，达到 85 分计为 A。</p>
           <div className="space-y-1 max-h-40 overflow-auto">
             {bCourses.map(r => (
               <div key={r.id} className="flex items-center gap-2 text-xs bg-white rounded px-2 py-1">
@@ -1045,7 +976,7 @@ function WESTab({ courses, algo }: { courses: ScoreRecord[]; algo: AlgorithmConf
                 <th className="text-center py-1">学分</th>
                 <th className="text-center py-1">类型</th>
                 <th className="text-center py-1">系数</th>
-                <th className="text-center py-1">美制学分</th>
+                <th className="text-center py-1">模型计入学分</th>
                 <th className="text-center py-1">成绩</th>
                 <th className="text-center py-1">WES等级</th>
                 <th className="text-center py-1">WES绩点</th>
@@ -1057,11 +988,11 @@ function WESTab({ courses, algo }: { courses: ScoreRecord[]; algo: AlgorithmConf
                   <td className="py-1 px-2">{r.courseName}</td>
                   <td className="text-center">{r.credits.toFixed(1)}</td>
                   <td className="text-center text-xs">{r.category}</td>
-                  <td className="text-center text-xs">{r.excluded ? '×0' : `×${wesConfig.creditCoefficients[r.category as keyof typeof wesConfig.creditCoefficients] ?? 0.75}`}</td>
+                  <td className="text-center text-xs">{'×' + r.coeff}</td>
                   <td className="text-center">{r.excluded ? '0' : r.usCredits}</td>
-                  <td className="text-center">{r.score}</td>
+                  <td className="text-center">{r.score ?? '—'}</td>
                   <td className="text-center font-medium">{r.excluded ? '—' : r.wesGrade}</td>
-                  <td className="text-center font-medium">{r.excluded ? '—' : r.wesGP.toFixed(1)}</td>
+                  <td className="text-center font-medium">{r.excluded ? '—' : displayMetric(r.wesGP, 1)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1081,7 +1012,7 @@ function ExportTab({ workspaceId, courses, algo }: { workspaceId: string; course
   const simGPA = calculateGPA(courses, 'simulatedScore', algo)
   const wesOrig = calculateWESGPA(courses, 'originalScore')
   const wesSim = calculateWESGPA(courses, 'simulatedScore')
-  const hasMod = courses.some(c => c.simulatedScore !== null)
+  const hasMod = courses.some(isModified)
   const [exportingPDF, setExportingPDF] = useState(false)
   const [showTargetPicker, setShowTargetPicker] = useState(false)
   const [kbEntryCount, setKbEntryCount] = useState(0)
@@ -1157,25 +1088,25 @@ function ExportTab({ workspaceId, courses, algo }: { workspaceId: string; course
         <div className="grid grid-cols-2 gap-3">
           <div className="text-center p-2 border rounded">
             <div className="text-xs text-muted-foreground">原始 GPA</div>
-            <div className="text-xl font-bold">{origGPA.toFixed(2)}</div>
+            <div className="text-xl font-bold">{displayMetric(origGPA)}</div>
           </div>
           <div className="text-center p-2 border rounded bg-blue-50">
             <div className="text-xs text-muted-foreground">模拟 GPA</div>
-            <div className="text-xl font-bold text-blue-600">{hasMod ? simGPA.toFixed(2) : '—'}</div>
+            <div className="text-xl font-bold text-blue-600">{hasMod ? displayMetric(simGPA) : '—'}</div>
           </div>
           <div className="text-center p-2 border rounded">
             <div className="text-xs text-muted-foreground">WES 原始</div>
-            <div className="text-xl font-bold">{wesOrig.toFixed(2)}</div>
+            <div className="text-xl font-bold">{displayMetric(wesOrig)}</div>
           </div>
           <div className="text-center p-2 border rounded bg-blue-50">
             <div className="text-xs text-muted-foreground">WES 模拟</div>
-            <div className="text-xl font-bold text-blue-600">{hasMod ? wesSim.toFixed(2) : '—'}</div>
+            <div className="text-xl font-bold text-blue-600">{hasMod ? displayMetric(wesSim) : '—'}</div>
           </div>
         </div>
 
         <div className="text-xs text-muted-foreground">
           <div>总课程: {courses.length} 门 | 总学分: {courses.reduce((s, c) => s + c.credits, 0)}</div>
-          <div>已修正: {courses.filter(c => c.isCorrected).length} 门 | 模拟中: {courses.filter(c => c.simulatedScore !== null).length} 门</div>
+          <div>已修正: {courses.filter(c => c.isCorrected).length} 门 | 模拟中: {courses.filter(isModified).length} 门</div>
           <div>算法: {algo.name}</div>
         </div>
 
