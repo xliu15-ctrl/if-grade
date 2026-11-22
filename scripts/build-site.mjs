@@ -7,7 +7,7 @@
 // 用法: node scripts/build-site.mjs
 // ============================================================
 import { build } from 'esbuild'
-import { copyFile, mkdir, rm, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, rm, readFile, writeFile } from 'node:fs/promises'
 import { zipSync } from 'fflate'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -58,6 +58,7 @@ if (browser) {
   await copyFile(path.join(root, 'site/scroll.css'), path.join(outdir, 'scroll.css'))
   await copyFile(path.join(root, 'site/pages.css'), path.join(outdir, 'pages.css'))
   await copyFile(path.join(root, 'site/journey.css'), path.join(outdir, 'journey.css'))
+  await cp(path.join(root, 'site/journey/postcards'), path.join(outdir, 'journey'), { recursive: true })
   const agentFiles = ['app.py', 'requirements.txt', 'Dockerfile', 'compose.yaml', '.env.example', '.dockerignore', 'README.md']
   const agentArchive = Object.fromEntries(await Promise.all(agentFiles.map(async name => [name, new Uint8Array(await readFile(path.join(root, 'agent', name)))])))
   await writeFile(path.join(outdir, 'ifgrade-agent.zip'), zipSync(agentArchive))
